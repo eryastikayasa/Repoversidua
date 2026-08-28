@@ -1,5 +1,5 @@
 idf_component_register(
-    SRCS "uart_control.cpp"
+    SRCS "wifi_manager.cpp"
     INCLUDE_DIRS "include"
-    REQUIRES esp_driver_uart esp_hal_gpio
+    REQUIRES esp_wifi esp_event nvs_flash
 )
