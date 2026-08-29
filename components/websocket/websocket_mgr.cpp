@@ -2,6 +2,7 @@
 #include "websocket_internal.h"
 #include "display.h"
 #include "wifi_manager.h"
+#include "web_config.h"
 #include "esp_log.h"
 #include "esp_websocket_client.h"
 #include "esp_crt_bundle.h"
@@ -99,11 +100,6 @@ static void websocket_tx_task(void *arg)
             free(setup_json); free(audio_data); continue;
         }
         if (cmd.type == WS_TX_COMMAND_AUDIO) {
-            /*
-             * V7.0.32 restores the proven v7.0.30 TX timing while keeping
-             * the v7.0.31 RX slot expansion. Capture frames remain 3200 bytes,
-             * but actual WebSocket writes stay at 1600-byte PCM chunks.
-             */
             static char b64_buf[2300];
             static char json_buf[2500];
             constexpr size_t PCM_SEND_CHUNK = 1600;
@@ -191,9 +187,6 @@ static void websocket_tx_task(void *arg)
             }
 
             if (send_failed) {
-                /* Do not force a second lifecycle transition here. The
-                 * websocket client reports the actual ERROR/DISCONNECTED
-                 * event when the transport has really failed. */
                 ESP_LOGW(TAG, "TX audio command dihentikan: sent_pcm=%u/%u",
                          (unsigned)offset, (unsigned)cmd.len);
             }
@@ -248,18 +241,28 @@ void websocket_app_start(void)
     clear_audio_buffer(); reset_audio_turn_stats(); reset_rx_buffer(); websocket_tx_flush_queue();
     if (!websocket_tx_init() || !websocket_rx_init()) return;
     is_connected = false; setup_complete = false; websocket_tx_error = false; ws_started = false;
+
+    // === Ambil API key dari NVS ===
+    char api_key[128];
+    if (!web_config_load_api_key(api_key, sizeof(api_key))) {
+        ESP_LOGE(TAG, "API key tidak ditemukan di NVS");
+        return;
+    }
+
+    // === Bangun URL WebSocket dinamis ===
+    char ws_url[256];
+    snprintf(ws_url, sizeof(ws_url),
+             "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=%s",
+             api_key);
+
     esp_websocket_client_config_t cfg = {};
-    cfg.uri = WEBSOCKET_SERVER_URL;
+    cfg.uri = ws_url;
     cfg.crt_bundle_attach = esp_crt_bundle_attach;
     cfg.skip_cert_common_name_check = false;
     cfg.cert_common_name = "generativelanguage.googleapis.com";
     cfg.network_timeout_ms = 15000;
     cfg.disable_auto_reconnect = true;
 
-    /*
-     * V7.0.28 DIAGNOSTIC retained:
-     * Enable library keep-alive PING while isolating the WebSocket write path.
-     */
     cfg.keep_alive_enable = true;
     cfg.keep_alive_idle = 30;
     cfg.keep_alive_interval = 10;
