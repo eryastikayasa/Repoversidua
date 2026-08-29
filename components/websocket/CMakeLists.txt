@@ -7,7 +7,7 @@ idf_component_register(
         "websocket_rx.cpp"
         "websocket_stack_wrap.c"
         "websocket_tx.cpp"
-    INCLUDE_DIRS "."
+    INCLUDE_DIRS "." "include"
     REQUIRES
         esp_websocket_client
         cjson
