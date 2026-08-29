@@ -1,5 +1,5 @@
 idf_component_register(
-    SRCS "wifi_manager.cpp"
+    SRCS "web_config.cpp"
     INCLUDE_DIRS "include"
-    REQUIRES esp_wifi esp_netif web_config
+    REQUIRES esp_http_server esp_wifi nvs_flash esp_system
 )
