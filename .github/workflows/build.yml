@@ -47,6 +47,7 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$GEMINI_API_KEY"
+          mkdir -p components/websocket/include
           printf '#pragma once\n#define GEMINI_API_KEY "%s"\n' "$GEMINI_API_KEY" > components/websocket/include/gemini_api_key.h
           test -s components/websocket/include/gemini_api_key.h
           echo "Gemini API key header: PASS"
@@ -57,12 +58,8 @@ jobs:
       - name: Download ESP-SR v2.4.5 model source
         run: |
           set -euo pipefail
-
-          # ESP-SR v2.4.5 is represented by this upstream commit.
-          # The Git tag v2.4.5 is not present in the upstream Git repository.
           ESP_SR_COMMIT="5fadfbd5bd9df756f543973bd43520d9270ffb1b"
           SRC_DIR="$RUNNER_TEMP/esp-sr-v2.4.5"
-
           rm -rf "$SRC_DIR"
           mkdir -p "$SRC_DIR"
           cd "$SRC_DIR"
@@ -72,12 +69,10 @@ jobs:
           git sparse-checkout set model/wakenet_model/wn9_hiesp
           git fetch --depth 1 origin "$ESP_SR_COMMIT"
           git checkout --detach FETCH_HEAD
-
           MODEL_SRC="$SRC_DIR/model/wakenet_model/wn9_hiesp"
           test -d "$MODEL_SRC"
           test -s "$MODEL_SRC/wn9_index"
           test -s "$MODEL_SRC/wn9_data"
-
           echo "ESP-SR v2.4.5 commit: $ESP_SR_COMMIT"
           echo "Model source: $MODEL_SRC"
           ls -lah "$MODEL_SRC"
@@ -88,25 +83,16 @@ jobs:
         run: |
           set -euo pipefail
           set -x
-
           BUILD="$PWD/.pio/build/esp32-s3-devkitc-1"
           test -d "$BUILD"
-
-          if [ -f "$PWD/sdkconfig" ]; then
-            SDKCONFIG="$PWD/sdkconfig"
-          else
-            SDKCONFIG="$(find "$PWD" -maxdepth 1 -type f -name 'sdkconfig.*' ! -name 'sdkconfig.defaults' -print -quit)"
-          fi
+          if [ -f "$PWD/sdkconfig" ]; then SDKCONFIG="$PWD/sdkconfig"; else SDKCONFIG="$(find "$PWD" -maxdepth 1 -type f -name 'sdkconfig.*' ! -name 'sdkconfig.defaults' -print -quit)"; fi
           test -n "$SDKCONFIG" && test -f "$SDKCONFIG"
-
           PACKER="$PWD/scripts/pack_model.py"
           test -f "$PACKER"
-
           MODEL_SRC="$RUNNER_TEMP/esp-sr-v2.4.5/model/wakenet_model/wn9_hiesp"
           test -d "$MODEL_SRC"
           test -s "$MODEL_SRC/wn9_index"
           test -s "$MODEL_SRC/wn9_data"
-
           echo "=== ESP-SR MODEL DIAGNOSTIC ==="
           echo "Final sdkconfig: $SDKCONFIG"
           echo "Repository packer: $PACKER"
@@ -118,21 +104,15 @@ jobs:
           ls -lah "$MODEL_SRC"
           echo "--- packer syntax check ---"
           python -m py_compile "$PACKER"
-
           mkdir -p "$BUILD/srmodels"
           rm -f "$BUILD/srmodels/srmodels.bin"
           rm -rf "$BUILD/srmodels/wn9_hiesp"
           cp -a "$MODEL_SRC" "$BUILD/srmodels/wn9_hiesp"
-
           MODEL="$BUILD/srmodels/srmodels.bin"
           echo "=== RUN ESP-SR pack_model.py ==="
-          python -u "$PACKER" \
-            -m "$BUILD/srmodels" \
-            -o "$MODEL"
-
+          python -u "$PACKER" -m "$BUILD/srmodels" -o "$MODEL"
           echo "--- generated srmodels tree ---"
           find "$BUILD/srmodels" -maxdepth 2 -type f -printf '%p %s bytes\n' | sort
-
           test -s "$MODEL"
           test -s "$BUILD/srmodels/wn9_hiesp/wn9_index"
           test -s "$BUILD/srmodels/wn9_hiesp/wn9_data"
