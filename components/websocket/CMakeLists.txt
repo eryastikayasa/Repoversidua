@@ -22,6 +22,7 @@ idf_component_register(
         esp_driver_uart
         esp_driver_gpio
         freertos
+        web_config
 )
 
 target_link_libraries(${COMPONENT_LIB} INTERFACE
