@@ -27,7 +27,6 @@ static void smooth_move(int from_x, int from_y, int to_x, int to_y,
     else if (state == FACE_SAD) expr = 6;
     else if (state == FACE_ERROR) expr = 99;
     else if (state == FACE_SPEAKING) expr = 2;
-
     for (int i = 1; i <= steps; ++i) {
         if (face_get_state() != state) return;
         int x = from_x + ((to_x - from_x) * i) / steps;
@@ -39,24 +38,18 @@ static void smooth_move(int from_x, int from_y, int to_x, int to_y,
 
 static void blink(face_state_t state, bool double_blink)
 {
-    int expr = (state == FACE_HAPPY || state == FACE_LISTENING) ? 2 :
-               (state == FACE_SAD ? 6 : 0);
+    int expr = (state == FACE_HAPPY || state == FACE_LISTENING) ? 2 : (state == FACE_SAD ? 6 : 0);
     if (face_get_state() != state) return;
-    render(expr, 1, 0, 0, 0);
-    vTaskDelay(pdMS_TO_TICKS(100));
+    render(expr, 1, 0, 0, 0); vTaskDelay(pdMS_TO_TICKS(100));
     if (face_get_state() != state) return;
-    render(expr, 0, 0, 0, 0);
-    vTaskDelay(pdMS_TO_TICKS(120));
+    render(expr, 0, 0, 0, 0); vTaskDelay(pdMS_TO_TICKS(120));
     if (double_blink && face_get_state() == state) {
-        render(expr, 1, 0, 0, 0);
-        vTaskDelay(pdMS_TO_TICKS(100));
+        render(expr, 1, 0, 0, 0); vTaskDelay(pdMS_TO_TICKS(100));
         if (face_get_state() == state) render(expr, 0, 0, 0, 0);
     }
 }
 
-static int idle_shift_x = 0;
-static int idle_shift_y = 0;
-static int idle_expression = 0;
+static int idle_shift_x = 0, idle_shift_y = 0, idle_expression = 0;
 static TickType_t next_shift_tick = 0;
 static bool idle_shift_initialized = false;
 
@@ -75,10 +68,7 @@ static void update_idle_shift(void)
 static void idle_render(int step, int extra_x, int extra_y, int look)
 {
     update_idle_shift();
-    render(idle_expression, step,
-           idle_shift_x + extra_x,
-           idle_shift_y + extra_y,
-           look);
+    render(idle_expression, step, idle_shift_x + extra_x, idle_shift_y + extra_y, look);
 }
 
 static void idle_sequence(void)
@@ -88,117 +78,70 @@ static void idle_sequence(void)
     if (face_get_state() != FACE_IDLE) return;
     update_idle_shift();
     uint32_t behavior = rnd(100);
-
     if (behavior < 30) {
-        int x = (rnd(2) == 0) ? -4 : 4;
-        int y = (int)rnd(7) - 3;
-        smooth_move(idle_shift_x, idle_shift_y,
-                    idle_shift_x + x, idle_shift_y + y, 180, 0, FACE_IDLE);
+        int x = (rnd(2) == 0) ? -4 : 4, y = (int)rnd(7) - 3;
+        smooth_move(idle_shift_x, idle_shift_y, idle_shift_x + x, idle_shift_y + y, 180, 0, FACE_IDLE);
         if (face_get_state() != FACE_IDLE) return;
         vTaskDelay(pdMS_TO_TICKS(180 + rnd(121)));
-        smooth_move(idle_shift_x + x, idle_shift_y + y,
-                    idle_shift_x, idle_shift_y, 180, 0, FACE_IDLE);
+        smooth_move(idle_shift_x + x, idle_shift_y + y, idle_shift_x, idle_shift_y, 180, 0, FACE_IDLE);
     } else if (behavior < 55) {
         int look = (rnd(2) == 0) ? 1 : 2;
-        idle_render(0, 0, 0, look);
-        vTaskDelay(pdMS_TO_TICKS(450 + rnd(401)));
+        idle_render(0, 0, 0, look); vTaskDelay(pdMS_TO_TICKS(450 + rnd(401)));
         if (face_get_state() == FACE_IDLE) idle_render(0, 0, 0, 0);
     } else if (behavior < 70) {
         int look = (rnd(2) == 0) ? 1 : 2;
-        int x = (look == 1) ? -3 : 3;
-        int y = (look == 1) ? -2 : 2;
-        smooth_move(idle_shift_x, idle_shift_y,
-                    idle_shift_x + x, idle_shift_y + y, 150, look, FACE_IDLE);
+        int x = (look == 1) ? -3 : 3, y = (look == 1) ? -2 : 2;
+        smooth_move(idle_shift_x, idle_shift_y, idle_shift_x + x, idle_shift_y + y, 150, look, FACE_IDLE);
         if (face_get_state() != FACE_IDLE) return;
         vTaskDelay(pdMS_TO_TICKS(200 + rnd(201)));
-        smooth_move(idle_shift_x + x, idle_shift_y + y,
-                    idle_shift_x, idle_shift_y, 150, 0, FACE_IDLE);
-    } else {
-        blink(FACE_IDLE, rnd(5) == 0);
-    }
+        smooth_move(idle_shift_x + x, idle_shift_y + y, idle_shift_x, idle_shift_y, 150, 0, FACE_IDLE);
+    } else blink(FACE_IDLE, rnd(5) == 0);
 }
 
 static void state_sequence(face_state_t state)
 {
     switch (state) {
     case FACE_LISTENING:
-        // Listening is a stable focused face. Only render once; do not
-        // repeatedly jump the eyes while waiting for user audio.
-        render(1, 0, 0, 0, 0);
-        vTaskDelay(pdMS_TO_TICKS(180));
-        break;
-
+        render(1, 0, 0, 0, 0); vTaskDelay(pdMS_TO_TICKS(180)); break;
     case FACE_THINKING:
-        // Thinking is optional: this state is deliberately short and can be
-        // interrupted immediately when the first AI audio arrives.
         smooth_move(0, 0, -4, -2, 180, 1, state);
         if (face_get_state() != state) break;
         vTaskDelay(pdMS_TO_TICKS(120));
         smooth_move(-4, -2, 4, -2, 360, 2, state);
         if (face_get_state() != state) break;
         vTaskDelay(pdMS_TO_TICKS(120));
-        smooth_move(4, -2, 0, 0, 180, 0, state);
-        break;
-
+        smooth_move(4, -2, 0, 0, 180, 0, state); break;
     case FACE_SPEAKING:
-        // Speaking is state-driven, not duration-driven. Keep animating until
-        // websocket_audio changes the state back to FACE_IDLE.
         while (face_get_state() == FACE_SPEAKING) {
-            render(2, 0, 0, 0, 0);
-            vTaskDelay(pdMS_TO_TICKS(120));
+            render(2, 0, 0, 0, 0); vTaskDelay(pdMS_TO_TICKS(120));
             if (face_get_state() != FACE_SPEAKING) break;
-            render(2, 1, 0, 0, 0);
-            vTaskDelay(pdMS_TO_TICKS(90));
+            render(2, 1, 0, 0, 0); vTaskDelay(pdMS_TO_TICKS(90));
             if (face_get_state() != FACE_SPEAKING) break;
-            render(2, 0, 0, 0, 1);
-            vTaskDelay(pdMS_TO_TICKS(120));
-        }
-        break;
-
+            render(2, 0, 0, 0, 1); vTaskDelay(pdMS_TO_TICKS(120));
+        } break;
     case FACE_HAPPY:
-        // Wake-word reaction: only 1-2 frames. The animation itself hands
-        // control to LISTENING so a wake event cannot leave the face stuck.
-        render(2, 0, 0, -1, 0);
-        vTaskDelay(pdMS_TO_TICKS(140));
+        render(2, 0, 0, -1, 0); vTaskDelay(pdMS_TO_TICKS(140));
         if (face_get_state() != FACE_HAPPY) break;
-        render(2, 0, 0, 0, 0);
-        vTaskDelay(pdMS_TO_TICKS(140));
-        if (face_get_state() == FACE_HAPPY) face_set_state(FACE_LISTENING);
-        break;
-
+        render(2, 0, 0, 0, 0); vTaskDelay(pdMS_TO_TICKS(140));
+        if (face_get_state() == FACE_HAPPY) face_set_state(FACE_LISTENING); break;
     case FACE_SAD:
-        // One smooth entry frame followed by the stable sad expression.
         smooth_move(0, 0, 0, 2, 120, 0, state);
         if (face_get_state() != state) break;
-        render(6, 0, 0, 0, 0);
-        vTaskDelay(pdMS_TO_TICKS(250));
-        break;
-
+        render(6, 0, 0, 0, 0); vTaskDelay(pdMS_TO_TICKS(250)); break;
     case FACE_ERROR:
-        // Small smooth displacement instead of a hard visual jump.
         smooth_move(0, 0, 1, 0, 120, 0, state);
         if (face_get_state() != state) break;
-        render(99, 0, 0, 0, 0);
-        vTaskDelay(pdMS_TO_TICKS(250));
-        break;
-
+        render(99, 0, 0, 0, 0); vTaskDelay(pdMS_TO_TICKS(250)); break;
     case FACE_SLEEP:
-        render(0, 1, 0, 0, 0);
-        vTaskDelay(pdMS_TO_TICKS(500));
-        break;
-
+        render(0, 1, 0, 0, 0); vTaskDelay(pdMS_TO_TICKS(500)); break;
     case FACE_IDLE:
-    default:
-        idle_sequence();
-        break;
+    default: idle_sequence(); break;
     }
 }
 
 static void face_animation_task(void *arg)
 {
-    (void)arg;
-    oled_init();
-    while (1) state_sequence(face_get_state());
+    (void)arg; oled_init(); while (1) state_sequence(face_get_state());
 }
 
 void face_animation_start(void)
@@ -210,12 +153,8 @@ void face_animation_start(void)
     xSemaphoreTake(anim_start_mutex, portMAX_DELAY);
     if (!anim_task_handle) {
         BaseType_t ok = xTaskCreate(face_animation_task, "face_anim", 6144, NULL, 2, &anim_task_handle);
-        if (ok != pdPASS) {
-            ESP_LOGE(TAG, "Gagal membuat task animasi OLED");
-            anim_task_handle = NULL;
-        } else {
-            ESP_LOGI(TAG, "Mochi OLED animation aktif");
-        }
+        if (ok != pdPASS) { ESP_LOGE(TAG, "Gagal membuat task animasi OLED"); anim_task_handle = NULL; }
+        else ESP_LOGI(TAG, "Mochi OLED animation aktif");
     }
     xSemaphoreGive(anim_start_mutex);
 }
