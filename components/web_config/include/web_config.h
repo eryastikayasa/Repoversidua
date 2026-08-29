@@ -8,7 +8,6 @@ extern "C" {
 #endif
 
 // Cek apakah perlu masuk mode konfigurasi.
-// Return true jika NVS kosong / force_config = 1.
 bool web_config_is_needed(void);
 
 // Mulai Access Point dan HTTP server untuk konfigurasi.
@@ -20,11 +19,17 @@ void web_config_save(const char *wifi_ssid,
                      const char *api_key,
                      const char *role_text);
 
-// Muat konfigurasi dari NVS. Digunakan oleh build_gemini_setup.
-// Return true jika data ditemukan.
+// Baca role text dari NVS.
 bool web_config_load_role(char *buf, size_t max_len);
 
-// Set force_config = 1, lalu restart (untuk masuk mode config lagi)
+// Baca SSID dan password WiFi dari NVS.
+bool web_config_load_wifi(char *ssid, size_t ssid_len,
+                          char *pass, size_t pass_len);
+
+// Baca API key Gemini dari NVS.
+bool web_config_load_api_key(char *api_key, size_t max_len);
+
+// Set force_config = 1, lalu restart.
 void web_config_force_reset(void);
 
 #ifdef __cplusplus
