@@ -7,6 +7,8 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include "esp_netif.h"
+#include "esp_event.h"
 
 static const char *TAG = "WEB_CONFIG";
 
@@ -133,24 +135,21 @@ static esp_err_t save_post_handler(httpd_req_t *req)
 
 // ================== PUBLIC API ==================
 
-bool web_config_is_needed(void)
-{
-    nvs_handle_t handle;
-    if (nvs_open(CONFIG_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) {
-        return true;
-    }
-    size_t len = 0;
-    esp_err_t err = nvs_get_str(handle, KEY_WIFI_SSID, NULL, &len);
-    nvs_close(handle);
-    return err != ESP_OK || len == 0;
-}
-
 void web_config_start(void)
 {
     ESP_LOGI(TAG, "Memulai mode konfigurasi AP");
 
+    // Inisialisasi NVS (jika belum)
     nvs_flash_init();
 
+    // Inisialisasi TCP/IP dan event loop
+    esp_netif_init();
+    esp_event_loop_create_default();
+
+    // Buat default AP netif
+    esp_netif_create_default_wifi_ap();
+
+    // Inisialisasi WiFi
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
@@ -165,6 +164,7 @@ void web_config_start(void)
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_config));
     ESP_ERROR_CHECK(esp_wifi_start());
 
+    // HTTP server
     httpd_config_t server_cfg = HTTPD_DEFAULT_CONFIG();
     server_cfg.server_port = 80;
     httpd_handle_t server = NULL;
