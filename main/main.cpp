@@ -4,6 +4,7 @@
 #include "audio_hal.h"
 #include "websocket_internal.h"
 #include "uart_control.h"
+#include "web_config.h"                // <-- tambahan untuk mode konfigurasi
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
@@ -29,6 +30,10 @@
 static const char *TAG = "MAIN";
 #define BOOT_BUTTON_GPIO GPIO_NUM_0
 #define WAKE_MODEL_NAME "wn9_hiesp"
+
+// ============================================================
+// WAKE WORD - ESP-SR WakeNet9 "Hi, ESP"
+// ============================================================
 
 static srmodel_list_t *sr_models = nullptr;
 static const esp_wn_iface_t *wake_iface = nullptr;
@@ -111,6 +116,10 @@ static void wakeword_deinit(void)
         sr_models = nullptr;
     }
 }
+
+// ============================================================
+// NETWORK DEBUG
+// ============================================================
 
 static bool debug_dns_resolution(void)
 {
@@ -230,6 +239,10 @@ static void debug_network_path(void)
     ESP_LOGI(TAG, "========================================");
 }
 
+// ============================================================
+// SNTP
+// ============================================================
+
 static void sync_sntp_time(void)
 {
     ESP_LOGI(TAG, "Mencari server NTP...");
@@ -262,6 +275,10 @@ static void sync_sntp_time(void)
     vTaskDelay(pdMS_TO_TICKS(1000));
 }
 
+// ============================================================
+// MIC ACTIVITY DETECTION
+// ============================================================
+
 static bool mic_frame_has_activity(const uint8_t *data, size_t len)
 {
     if (!data || len < 2) return false;
@@ -281,12 +298,14 @@ static bool mic_frame_has_activity(const uint8_t *data, size_t len)
     return false;
 }
 
+// ============================================================
+// AUDIO TASK: WAKE WORD + ACTIVE MODE
+// ============================================================
+
 static bool assistant_active = false;
 static int64_t last_user_activity_us = 0;
 static int64_t connect_start_us = 0;
 
-// Face-state bookkeeping for the current user turn. The actual animation/rendering
-// remains inside the display component; main.cpp only emits state changes.
 static bool user_spoke_this_turn = false;
 static bool thinking_state_sent = false;
 static int64_t last_voice_activity_us = 0;
@@ -409,14 +428,10 @@ static void audio_task(void *arg)
                 last_voice_activity_us = now_us;
                 user_spoke_this_turn = true;
                 thinking_state_sent = false;
-
-                // Wake/connection animation ends as soon as actual user speech arrives.
                 face_set_state(FACE_LISTENING);
             } else if (user_spoke_this_turn && !thinking_state_sent &&
                        !audio_turn_active && last_voice_activity_us > 0 &&
                        now_us - last_voice_activity_us >= THINKING_DELAY_US) {
-                // User has stopped talking; let the display enter the thinking state
-                // while Gemini is preparing the response.
                 face_set_state(FACE_THINKING);
                 thinking_state_sent = true;
             }
@@ -454,17 +469,26 @@ static void audio_task(void *arg)
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
-void uart_rx_task(void *arg) {
+
+// ============================================================
+// UART RX TASK (menerima data dari target)
+// ============================================================
+void uart_rx_task(void *arg)
+{
     char buf[128];
     while (1) {
         int len = uart_control_read(buf, sizeof(buf));
         if (len > 0) {
             ESP_LOGI(TAG, "RX UART: %s", buf);
-            // parsing "SUHU:" atau "CAHAYA:" dan update OLED/log
+            // Bisa tambahkan parsing "SUHU:" atau "CAHAYA:" di sini
         }
         vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
+
+// ============================================================
+// APP MAIN
+// ============================================================
 
 extern "C" void app_main()
 {
@@ -480,6 +504,16 @@ extern "C" void app_main()
         ret = nvs_flash_init();
     }
     ESP_ERROR_CHECK(ret);
+
+    // === CEK MODE KONFIGURASI WEB ===
+    if (web_config_is_needed()) {
+        display_status("Config Mode");
+        web_config_start();
+        // Web server berjalan sampai user submit, lalu esp_restart()
+        while (1) {
+            vTaskDelay(pdMS_TO_TICKS(1000));
+        }
+    }
 
     // FACE_SLEEP: short boot expression, then normal system-status screens continue.
     oled_init();
@@ -530,11 +564,19 @@ extern "C" void app_main()
     face_set_state(FACE_IDLE);
     face_animation_start();
 
+    // Buat task audio
     BaseType_t task_result = xTaskCreate(audio_task, "audio_task", 10240, NULL, 5, NULL);
     if (task_result != pdPASS)
         ESP_LOGE(TAG, "Gagal membuat audio_task!");
     else
         ESP_LOGI(TAG, "audio_task berhasil dimulai.");
+
+    // Buat task pembacaan UART (opsional, untuk menerima data sensor)
+    BaseType_t uart_task_result = xTaskCreate(uart_rx_task, "uart_rx_task", 4096, NULL, 1, NULL);
+    if (uart_task_result != pdPASS)
+        ESP_LOGE(TAG, "Gagal membuat uart_rx_task!");
+    else
+        ESP_LOGI(TAG, "uart_rx_task berhasil dimulai.");
 
     while (1) vTaskDelay(pdMS_TO_TICKS(1000));
 }
