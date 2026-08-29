@@ -53,6 +53,29 @@ static const char *HTML_FORM = R"rawliteral(
 
 // ================== NVS HELPERS (internal, tidak perlu extern C) ==================
 
+static void url_decode(char *dst, size_t dst_len, const char *src)
+{
+    if (!dst || !src || dst_len == 0) return;
+    size_t i = 0, j = 0;
+    while (src[i] && j < dst_len - 1) {
+        if (src[i] == '%' && i + 2 < strlen(src)) {
+            int h;
+            if (sscanf(src + i + 1, "%2x", &h) == 1) {
+                dst[j++] = (char)h;
+                i += 3;
+                continue;
+            }
+        }
+        if (src[i] == '+') {
+            dst[j++] = ' ';
+            i++;
+            continue;
+        }
+        dst[j++] = src[i++];
+    }
+    dst[j] = '\0';
+}
+
 static bool nvs_get_str_safe(const char *key, char *out, size_t max_len)
 {
     nvs_handle_t handle;
@@ -87,8 +110,8 @@ static esp_err_t root_get_handler(httpd_req_t *req)
 
 static esp_err_t save_post_handler(httpd_req_t *req)
 {
-    char content[1024];
-    int received = httpd_req_recv(req, content, sizeof(content) - 1);
+    char content[2048];
+int received = httpd_req_recv(req, content, sizeof(content) - 1);
     if (received <= 0) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Gagal menerima data");
         return ESP_FAIL;
@@ -103,22 +126,24 @@ static esp_err_t save_post_handler(httpd_req_t *req)
     char role_text[512] = "";
 
     char *token = strtok(content, "&");
-    while (token) {
-        char key[64] = "";
-        char value[512] = "";
-        if (sscanf(token, "%63[^=]=%511s", key, value) == 2) {
-            if (strcmp(key, "wifi_ssid") == 0) {
-                strncpy(wifi_ssid, value, sizeof(wifi_ssid) - 1);
-            } else if (strcmp(key, "wifi_pass") == 0) {
-                strncpy(wifi_pass, value, sizeof(wifi_pass) - 1);
-            } else if (strcmp(key, "api_key") == 0) {
-                strncpy(api_key, value, sizeof(api_key) - 1);
-            } else if (strcmp(key, "role_text") == 0) {
-                strncpy(role_text, value, sizeof(role_text) - 1);
-            }
+while (token) {
+    char key[64] = "";
+    char value[512] = "";
+    if (sscanf(token, "%63[^=]=%511s", key, value) == 2) {
+        char decoded[512];
+        url_decode(decoded, sizeof(decoded), value);
+        if (strcmp(key, "wifi_ssid") == 0) {
+            strncpy(wifi_ssid, decoded, sizeof(wifi_ssid) - 1);
+        } else if (strcmp(key, "wifi_pass") == 0) {
+            strncpy(wifi_pass, decoded, sizeof(wifi_pass) - 1);
+        } else if (strcmp(key, "api_key") == 0) {
+            strncpy(api_key, decoded, sizeof(api_key) - 1);
+        } else if (strcmp(key, "role_text") == 0) {
+            strncpy(role_text, decoded, sizeof(role_text) - 1);
         }
-        token = strtok(NULL, "&");
     }
+    token = strtok(NULL, "&");
+}
 
     web_config_save(wifi_ssid, wifi_pass, api_key, role_text);
     ESP_LOGI(TAG, "Konfigurasi disimpan, restart...");
