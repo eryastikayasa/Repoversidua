@@ -172,7 +172,9 @@ void web_config_start(void)
     ESP_ERROR_CHECK(esp_wifi_start());
 
     httpd_config_t server_cfg = HTTPD_DEFAULT_CONFIG();
-    server_cfg.server_port = 80;
+server_cfg.server_port = 80;
+server_cfg.stack_size = 12288;   // tambahkan ini, 12 KB
+server_cfg.task_priority = 6;    // opsional, default 5 cukup
     httpd_handle_t server = NULL;
     if (httpd_start(&server, &server_cfg) == ESP_OK) {
         httpd_uri_t root_uri = {
