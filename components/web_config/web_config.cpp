@@ -4,11 +4,11 @@
 #include "esp_log.h"
 #include "nvs_flash.h"
 #include "nvs.h"
+#include "esp_netif.h"
+#include "esp_event.h"
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
-#include "esp_netif.h"
-#include "esp_event.h"
 
 static const char *TAG = "WEB_CONFIG";
 
@@ -19,7 +19,6 @@ static const char *TAG = "WEB_CONFIG";
 #define KEY_ROLE_TEXT    "role_text"
 #define KEY_FORCE_CONFIG "force_config"
 
-// Halaman HTML sederhana
 static const char *HTML_FORM = R"rawliteral(
 <!DOCTYPE html>
 <html>
@@ -52,7 +51,7 @@ static const char *HTML_FORM = R"rawliteral(
 </html>
 )rawliteral";
 
-// ================== NVS HELPERS ==================
+// ================== NVS HELPERS (internal, tidak perlu extern C) ==================
 
 static bool nvs_get_str_safe(const char *key, char *out, size_t max_len)
 {
@@ -77,7 +76,7 @@ static void nvs_set_str_safe(const char *key, const char *value)
     }
 }
 
-// ================== HTTP HANDLERS ==================
+// ================== HTTP HANDLERS (internal) ==================
 
 static esp_err_t root_get_handler(httpd_req_t *req)
 {
@@ -98,7 +97,6 @@ static esp_err_t save_post_handler(httpd_req_t *req)
 
     ESP_LOGI(TAG, "POST data: %s", content);
 
-    // Parsing sederhana: key=value&key2=value2
     char wifi_ssid[64] = "";
     char wifi_pass[64] = "";
     char api_key[128] = "";
@@ -133,23 +131,32 @@ static esp_err_t save_post_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
-// ================== PUBLIC API ==================
+// ================== PUBLIC API (dibungkus extern C) ==================
+
+extern "C" {
+
+bool web_config_is_needed(void)
+{
+    nvs_handle_t handle;
+    if (nvs_open(CONFIG_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) {
+        return true;
+    }
+    size_t len = 0;
+    esp_err_t err = nvs_get_str(handle, KEY_WIFI_SSID, NULL, &len);
+    nvs_close(handle);
+    return err != ESP_OK || len == 0;
+}
 
 void web_config_start(void)
 {
     ESP_LOGI(TAG, "Memulai mode konfigurasi AP");
 
-    // Inisialisasi NVS (jika belum)
     nvs_flash_init();
 
-    // Inisialisasi TCP/IP dan event loop
     esp_netif_init();
     esp_event_loop_create_default();
-
-    // Buat default AP netif
     esp_netif_create_default_wifi_ap();
 
-    // Inisialisasi WiFi
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
@@ -164,7 +171,6 @@ void web_config_start(void)
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_config));
     ESP_ERROR_CHECK(esp_wifi_start());
 
-    // HTTP server
     httpd_config_t server_cfg = HTTPD_DEFAULT_CONFIG();
     server_cfg.server_port = 80;
     httpd_handle_t server = NULL;
@@ -230,3 +236,5 @@ void web_config_force_reset(void)
     nvs_set_str_safe(KEY_FORCE_CONFIG, "1");
     esp_restart();
 }
+
+} // extern "C"
