@@ -120,16 +120,11 @@ static esp_err_t save_post_handler(httpd_req_t *req)
         token = strtok(NULL, "&");
     }
 
-    // Decode URL encoding sederhana (spasi +20%)
-    // Ini tidak lengkap, tapi cukup untuk teks dasar.
-    // Anda bisa gunakan lib curl/url decode jika tersedia.
-
     web_config_save(wifi_ssid, wifi_pass, api_key, role_text);
     ESP_LOGI(TAG, "Konfigurasi disimpan, restart...");
 
     httpd_resp_sendstr(req, "OK. Restart...");
 
-    // Restart setelah 1 detik
     vTaskDelay(pdMS_TO_TICKS(1000));
     esp_restart();
 
@@ -154,10 +149,8 @@ void web_config_start(void)
 {
     ESP_LOGI(TAG, "Memulai mode konfigurasi AP");
 
-    // Init NVS
     nvs_flash_init();
 
-    // WiFi AP
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
@@ -172,7 +165,6 @@ void web_config_start(void)
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_config));
     ESP_ERROR_CHECK(esp_wifi_start());
 
-    // HTTP server
     httpd_config_t server_cfg = HTTPD_DEFAULT_CONFIG();
     server_cfg.server_port = 80;
     httpd_handle_t server = NULL;
@@ -213,6 +205,24 @@ void web_config_save(const char *wifi_ssid,
 bool web_config_load_role(char *buf, size_t max_len)
 {
     return nvs_get_str_safe(KEY_ROLE_TEXT, buf, max_len);
+}
+
+bool web_config_load_wifi(char *ssid, size_t ssid_len,
+                          char *pass, size_t pass_len)
+{
+    if (ssid == NULL || pass == NULL || ssid_len == 0 || pass_len == 0)
+        return false;
+
+    if (!nvs_get_str_safe(KEY_WIFI_SSID, ssid, ssid_len))
+        return false;
+
+    nvs_get_str_safe(KEY_WIFI_PASS, pass, pass_len);
+    return true;
+}
+
+bool web_config_load_api_key(char *api_key, size_t max_len)
+{
+    return nvs_get_str_safe(KEY_API_KEY, api_key, max_len);
 }
 
 void web_config_force_reset(void)
