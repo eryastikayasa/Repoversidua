@@ -1,4 +1,5 @@
 #include "wifi_manager.h"
+#include "web_config.h"
 
 #include <string.h>
 
@@ -133,9 +134,17 @@ void wifi_init_sta(void)
         return;
     }
 
+    // === Ambil SSID dan password dari NVS ===
+    char ssid[64] = "";
+    char pass[64] = "";
+    if (!web_config_load_wifi(ssid, sizeof(ssid), pass, sizeof(pass))) {
+        ESP_LOGE(TAG, "WiFi SSID tidak ditemukan di NVS");
+        return;
+    }
+
     wifi_config_t wifi_config = {};
-    strncpy((char *)wifi_config.sta.ssid, WIFI_SSID, sizeof(wifi_config.sta.ssid) - 1);
-    strncpy((char *)wifi_config.sta.password, WIFI_PASS, sizeof(wifi_config.sta.password) - 1);
+    strncpy((char *)wifi_config.sta.ssid, ssid, sizeof(wifi_config.sta.ssid) - 1);
+    strncpy((char *)wifi_config.sta.password, pass, sizeof(wifi_config.sta.password) - 1);
     wifi_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
 
     err = esp_wifi_set_mode(WIFI_MODE_STA);
