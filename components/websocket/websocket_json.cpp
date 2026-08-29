@@ -2,12 +2,14 @@
 
 #include "display.h"
 #include "audio_hal.h"
+#include "web_config.h"          // <-- untuk memuat role text dari NVS
 
 #include "esp_log.h"
 #include "esp_system.h"
 #include "mbedtls/base64.h"
 #include "cJSON.h"
 #include "uart_control.h"
+
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -100,9 +102,6 @@ static bool compact_large_audio_payload(char *json, size_t *io_len)
         }
     }
 
-    /* Replace the large base64 value with an empty JSON string by moving only
-     * the tail of this RX slot. The RX slot remains the owner of the buffer;
-     * no new heap allocation is made. */
     const size_t remove_len = b64_len;
     memmove(b64, q, (size_t)(end - q));
     *io_len = len - remove_len;
@@ -152,29 +151,46 @@ bool build_gemini_setup(char **output, size_t *output_len)
     cJSON_AddStringToObject(prebuilt, "voiceName", "Kore");
     cJSON_AddStringToObject(setup, "model", "models/gemini-3.1-flash-live-preview");
     cJSON_AddObjectToObject(setup, "inputAudioTranscription");
-    // System instruction — format Content/Part yang benar
-cJSON *system_instruction =
-    cJSON_AddObjectToObject(setup, "systemInstruction");
 
-cJSON *instruction_parts =
-    cJSON_AddArrayToObject(system_instruction, "parts");
+    // === Muat role text dari NVS ===
+    char personal_role[512] = "";
+    if (!web_config_load_role(personal_role, sizeof(personal_role))) {
+        // Jika kosong, gunakan default
+        strcpy(personal_role, "");
+    }
 
-cJSON *instruction_part = cJSON_CreateObject();
+    // Bangun instruksi sistem lengkap
+    char full_instruction[1024];
+    if (personal_role[0] != '\0') {
+        snprintf(full_instruction, sizeof(full_instruction),
+                 "Anda adalah asisten pintar bernama ESP. "
+                 "Jawablah dengan singkat, sopan, dan ramah. "
+                 "Jika pengguna memberikan perintah seperti 'nyalakan lampu', "
+                 "'matikan kipas', 'kecilkan volume', atau 'besarkan volume', "
+                 "konfirmasikan tindakan tersebut dengan kalimat yang jelas, "
+                 "misalnya: 'Baik, lampu dinyalakan', "
+                 "'Volume diturunkan', 'Kipas dimatikan'. "
+                 "Jangan menjelaskan teknis, cukup konfirmasi singkat. %s",
+                 personal_role);
+    } else {
+        snprintf(full_instruction, sizeof(full_instruction),
+                 "Anda adalah asisten pintar bernama ESP. "
+                 "Jawablah dengan singkat, sopan, dan ramah. "
+                 "Jika pengguna memberikan perintah seperti 'nyalakan lampu', "
+                 "'matikan kipas', 'kecilkan volume', atau 'besarkan volume', "
+                 "konfirmasikan tindakan tersebut dengan kalimat yang jelas, "
+                 "misalnya: 'Baik, lampu dinyalakan', "
+                 "'Volume diturunkan', 'Kipas dimatikan'. "
+                 "Jangan menjelaskan teknis, cukup konfirmasi singkat.");
+    }
 
-cJSON_AddStringToObject(
-    instruction_part,
-    "text",
-    "Anda adalah asisten pintar bernama ESP. "
-    "Jawablah dengan singkat, sopan, dan ramah. "
-    "Jika pengguna memberikan perintah seperti 'nyalakan lampu', "
-    "'matikan kipas', 'kecilkan volume', atau 'besarkan volume', "
-    "konfirmasikan tindakan tersebut dengan kalimat yang jelas, "
-    "misalnya: 'Baik, lampu dinyalakan', "
-    "'Volume diturunkan', 'Kipas dimatikan'. "
-    "Jangan menjelaskan teknis, cukup konfirmasi singkat."
-);
-
+    // Format systemInstruction yang benar
+    cJSON *system_instruction = cJSON_AddObjectToObject(setup, "systemInstruction");
+    cJSON *instruction_parts = cJSON_AddArrayToObject(system_instruction, "parts");
+    cJSON *instruction_part = cJSON_CreateObject();
+    cJSON_AddStringToObject(instruction_part, "text", full_instruction);
     cJSON_AddItemToArray(instruction_parts, instruction_part);
+
     cJSON *realtime = cJSON_AddObjectToObject(setup, "realtimeInputConfig");
     cJSON *aad = cJSON_AddObjectToObject(realtime, "automaticActivityDetection");
     cJSON_AddBoolToObject(aad, "disabled", false);
@@ -193,7 +209,7 @@ cJSON_AddStringToObject(
 
     *output = json;
     *output_len = strlen(json);
-    ESP_LOGI(TAG, "Gemini setup V7.0.9: AUDIO + id-ID + AAD ENABLED");
+    ESP_LOGI(TAG, "Gemini setup V7.0.9: AUDIO + id-ID + AAD ENABLED + ROLE");
     return true;
 }
 
@@ -240,8 +256,7 @@ static bool is_esp_called(const char *text)
 {
     if (!text) return false;
 
-    // Salin teks ke buffer lokal dan ubah ke huruf kecil
-    char lower[512]; // sesuaikan dengan panjang maksimal teks transkripsi
+    char lower[512];
     size_t len = strlen(text);
     if (len >= sizeof(lower)) len = sizeof(lower) - 1;
     for (size_t i = 0; i < len; i++) {
@@ -253,7 +268,6 @@ static bool is_esp_called(const char *text)
 
     const char *p = lower;
     while ((p = strstr(p, "esp")) != NULL) {
-        // Periksa karakter sebelum dan sesudah
         bool before_ok = (p == lower) || (*(p-1) == ' ' || *(p-1) == '\t' || *(p-1) == '\n' || *(p-1) == '\r');
         bool after_ok = (*(p+3) == '\0' || *(p+3) == ' ' || *(p+3) == '\t' || *(p+3) == '\n' || *(p+3) == '\r');
         if (before_ok && after_ok) return true;
@@ -298,14 +312,12 @@ void process_gemini_message(const char *json, size_t len)
             const char *user_text = text->valuestring;
             ESP_LOGI(TAG, "USER: %s", user_text);
 
-            // Deteksi panggilan "ESP"
             bool esp_called = is_esp_called(user_text);
             if (esp_called) {
                 ESP_LOGI(TAG, "Kata panggil ESP terdeteksi!");
                 face_set_state(FACE_HAPPY);
             }
 
-            // Hanya proses perintah lokal jika diawali panggilan "ESP"
             if (esp_called) {
                 uint8_t current_volume = get_gemini_volume();
 
@@ -317,7 +329,6 @@ void process_gemini_message(const char *json, size_t len)
                     current_volume = current_volume >= 10 ? current_volume - 10 : 0;
                     set_gemini_volume(current_volume);
                     ESP_LOGI(TAG, "Perintah volume: TURUNKAN -> %u%%", (unsigned)current_volume);
-                    // Gemini akan merespons secara verbal, tidak perlu beep
                 }
                 // ===== PERINTAH NAIKKAN VOLUME =====
                 else if (strstr(user_text, "besarkan volume") || strstr(user_text, "volume besar") ||
@@ -398,9 +409,6 @@ void process_gemini_message(const char *json, size_t len)
                     cJSON *mimeType = cJSON_GetObjectItem(inlineData, "mimeType");
                     if (cJSON_IsString(mimeType) && mimeType->valuestring)
                         ESP_LOGD(TAG, "Gemini audio MIME: %s", mimeType->valuestring);
-                    /* Large audio was decoded before cJSON parsing and its
-                     * base64 value was compacted to an empty string. Small
-                     * audio keeps the original parser/decode path below. */
                     cJSON *audio = cJSON_GetObjectItem(inlineData, "data");
                     if (!cJSON_IsString(audio) || !audio->valuestring) continue;
                     const char *b64 = audio->valuestring;
