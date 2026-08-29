@@ -7,12 +7,23 @@ idf_component_register(
         "websocket_rx.cpp"
         "websocket_stack_wrap.c"
         "websocket_tx.cpp"
-    INCLUDE_DIRS "." "include"
+    INCLUDE_DIRS
+        "include"
     REQUIRES
         esp_websocket_client
+        esp-tls
+        esp_event
         cjson
-        audio_hal
+        mbedtls
         display
+        audio_hal
         wifi_manager
+        uart_control
+        esp_driver_uart
+        esp_driver_gpio
         freertos
+)
+
+target_link_libraries(${COMPONENT_LIB} INTERFACE
+    "-Wl,--wrap=esp_websocket_client_init"
 )

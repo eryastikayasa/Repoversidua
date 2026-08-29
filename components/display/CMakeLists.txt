@@ -10,6 +10,6 @@ idf_component_register(
         "faces/face_sad.cpp"
         "faces/face_error.cpp"
         "faces/face_sleep.cpp"
-    INCLUDE_DIRS "." "faces"
-    REQUIRES driver esp_lcd freertos
+    INCLUDE_DIRS "include"
+    REQUIRES esp_driver_gpio esp_driver_i2c esp_lcd freertos
 )
