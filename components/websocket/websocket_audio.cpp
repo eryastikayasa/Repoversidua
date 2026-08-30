@@ -214,7 +214,7 @@ static void audio_playback_task(void *arg)
             underrun_reported = false;
         }
 
-        vTaskDelay(1);
+        vTaskDelay(pdMS_TO_TICKS(2));
     }
 }
 
