@@ -252,7 +252,7 @@ bool start_audio_playback(void)
     }
 
     BaseType_t result = xTaskCreatePinnedToCore(audio_playback_task, "audio_playback",
-                                                4096, NULL, 6,
+                                                4096, NULL, 5,
                                                 &audio_playback_task_handle, 0);
     if (result != pdPASS) {
         ESP_LOGE(TAG, "Gagal membuat audio_task/playback task: free_internal=%u largest=%u",
