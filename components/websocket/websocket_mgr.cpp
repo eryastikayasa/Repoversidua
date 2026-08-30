@@ -102,7 +102,7 @@ static void websocket_tx_task(void *arg)
         if (cmd.type == WS_TX_COMMAND_AUDIO) {
             static char b64_buf[2300];
             static char json_buf[2500];
-            constexpr size_t PCM_SEND_CHUNK = 1600;
+            constexpr size_t PCM_SEND_CHUNK = 800;
             constexpr TickType_t AUDIO_SEND_TIMEOUT = pdMS_TO_TICKS(3000);
             constexpr TickType_t AUDIO_SEND_RETRY_DELAY = pdMS_TO_TICKS(30);
             constexpr int AUDIO_SEND_RETRIES = 1;
@@ -164,6 +164,7 @@ static void websocket_tx_task(void *arg)
                         AUDIO_SEND_TIMEOUT);
                     if (sent == json_len) {
                         chunk_sent = true;
+                        vTaskDelay(pdMS_TO_TICKS(10));
                         break;
                     }
 
@@ -267,7 +268,7 @@ void websocket_app_start(void)
     cfg.keep_alive_idle = 30;
     cfg.keep_alive_interval = 10;
     cfg.keep_alive_count = 3;
-    cfg.buffer_size = 8192;
+    cfg.buffer_size = 16384;
     ESP_LOGI(TAG, "V7.0.32 DIAGNOSTIC: PING ON, audio write timeout=3000ms, retry=1, retry_delay=30ms");
 
     client = esp_websocket_client_init(&cfg);
