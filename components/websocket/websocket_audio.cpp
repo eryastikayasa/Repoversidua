@@ -263,7 +263,7 @@ bool start_audio_playback(void)
         audio_playback_task_handle = NULL;
         return false;
     }
-    ESP_LOGI(TAG, "Audio ring buffer siap: %u byte, prebuffer=%u, target=%u B/s, playback core=0 priority=6",
+    ESP_LOGI(TAG, "Audio ring buffer siap: %u byte, prebuffer=%u, target=%u B/s, playback core=0 priority=5",
              (unsigned)AUDIO_RING_BUFFER_SIZE,
              (unsigned)AUDIO_PLAYBACK_PREBUFFER_SIZE,
              (unsigned)AUDIO_OUTPUT_BYTES_PER_SEC);
