@@ -16,7 +16,7 @@
 static const char *TAG = "WS_AUDIO";
 static volatile bool audio_clear_pending = false;
 volatile uint8_t gemini_volume_percent = 100;
-static int16_t volume_buffer[2048];   // untuk scaling volume (4096 byte)
+static int16_t volume_buffer[2048];
 
 static StaticSemaphore_t audio_send_mutex_storage;
 static SemaphoreHandle_t audio_send_mutex = NULL;
@@ -69,7 +69,6 @@ static size_t send_realtime_pcm(const uint8_t *data, size_t len)
     return offset;
 }
 
-// === VOLUME ACTIVE ===
 void set_gemini_volume(uint8_t percent)
 {
     if (percent > 100) percent = 100;
@@ -114,7 +113,7 @@ static void audio_playback_task(void *arg)
     bool underrun_reported = false;
     uint32_t playback_generation = 0;
     int64_t last_stats_us = 0;
-    ESP_LOGI(TAG, "Audio playback task: 24kHz PCM16 mono, ring=%u, prebuffer=%u, core=%d priority=3",
+    ESP_LOGI(TAG, "Audio playback task: 24kHz PCM16 mono, ring=%u, prebuffer=%u, core=%d priority=5",
              (unsigned)AUDIO_RING_BUFFER_SIZE,
              (unsigned)AUDIO_PLAYBACK_PREBUFFER_SIZE,
              xPortGetCoreID());
@@ -177,12 +176,12 @@ static void audio_playback_task(void *arg)
                                                pdMS_TO_TICKS(AUDIO_PLAYBACK_READ_WAIT_MS));
         if (received == 0) {
             check_audio_playback_complete();
-            vTaskDelay(1);
+            vTaskDelay(pdMS_TO_TICKS(2));
             continue;
         }
         received &= ~((size_t)1);
         if (received == 0) {
-            vTaskDelay(1);
+            vTaskDelay(pdMS_TO_TICKS(2));
             continue;
         }
 
@@ -251,9 +250,10 @@ bool start_audio_playback(void)
         return false;
     }
 
+    // Pindahkan playback ke core 1 untuk menghindari beban CPU0 bersama WiFi.
     BaseType_t result = xTaskCreatePinnedToCore(audio_playback_task, "audio_playback",
                                                 4096, NULL, 5,
-                                                &audio_playback_task_handle, 0);
+                                                &audio_playback_task_handle, 1);
     if (result != pdPASS) {
         ESP_LOGE(TAG, "Gagal membuat audio_task/playback task: free_internal=%u largest=%u",
                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
@@ -263,7 +263,7 @@ bool start_audio_playback(void)
         audio_playback_task_handle = NULL;
         return false;
     }
-    ESP_LOGI(TAG, "Audio ring buffer siap: %u byte, prebuffer=%u, target=%u B/s, playback core=0 priority=5",
+    ESP_LOGI(TAG, "Audio ring buffer siap: %u byte, prebuffer=%u, target=%u B/s, playback core=1 priority=5",
              (unsigned)AUDIO_RING_BUFFER_SIZE,
              (unsigned)AUDIO_PLAYBACK_PREBUFFER_SIZE,
              (unsigned)AUDIO_OUTPUT_BYTES_PER_SEC);
@@ -346,7 +346,6 @@ bool queue_audio_pcm(const uint8_t *pcm, size_t len)
     uint64_t queued_before = audio_bytes_queued;
     uint64_t dropped_before = audio_bytes_dropped;
 
-    // === VOLUME ACTIVE: scaling sebelum kirim ===
     if (gemini_volume_percent < 100) {
         const int16_t *src = (const int16_t *)pcm;
         size_t total_samples = len / sizeof(int16_t);
