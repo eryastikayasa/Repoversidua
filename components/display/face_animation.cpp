@@ -123,7 +123,10 @@ static void state_sequence(face_state_t state)
         render(2, 0, 0, -1, 0); vTaskDelay(pdMS_TO_TICKS(140));
         if (face_get_state() != FACE_HAPPY) break;
         render(2, 0, 0, 0, 0); vTaskDelay(pdMS_TO_TICKS(140));
-        if (face_get_state() == FACE_HAPPY) face_set_state(FACE_LISTENING); break;
+        if (face_get_state() == FACE_HAPPY) {
+    face_set_state(FACE_LISTENING);
+}
+break;
     case FACE_SAD:
         smooth_move(0, 0, 0, 2, 120, 0, state);
         if (face_get_state() != state) break;
