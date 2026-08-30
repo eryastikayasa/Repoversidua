@@ -14,13 +14,14 @@
 #define WS_RX_SLOT_SIZE (40 * 1024)
 /* v7.0.31: increase persistent RX slot headroom after v7.0.30 showed
  * buffer_drop=4 and queue_hwm=4 during Gemini audio bursts. */
-#define WS_RX_SLOT_COUNT 8
+#define WS_RX_SLOT_COUNT 16
 #define WS_RX_TERMINATOR_SIZE 1
 #define WS_RX_STREAM_THRESHOLD (8 * 1024)
 #define WS_RX_STREAM_COMPACT_SIZE (32 * 1024)
 #define WS_TX_AUDIO_SIZE 3200
 #define WS_TX_QUEUE_LENGTH 3
 #define WS_RX_QUEUE_LENGTH WS_RX_SLOT_COUNT
+
 
 typedef enum { WS_TX_COMMAND_SETUP = 1, WS_TX_COMMAND_AUDIO = 2 } ws_tx_command_type_t;
 typedef struct { ws_tx_command_type_t type; uint32_t generation; uint16_t len; uint8_t *data; } ws_tx_command_t;
