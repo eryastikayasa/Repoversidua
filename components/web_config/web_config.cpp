@@ -111,12 +111,14 @@ static esp_err_t root_get_handler(httpd_req_t *req)
 static esp_err_t save_post_handler(httpd_req_t *req)
 {
     char content[2048];
-int received = httpd_req_recv(req, content, sizeof(content) - 1);
-    if (received <= 0) {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Gagal menerima data");
-        return ESP_FAIL;
+    int total = 0;
+    int received = 0;
+    while (total < (int)sizeof(content) - 1) {
+        received = httpd_req_recv(req, content + total, sizeof(content) - 1 - total);
+        if (received <= 0) break;
+        total += received;
     }
-    content[received] = '\0';
+    content[total] = '\0';
 
     ESP_LOGI(TAG, "POST data: %s", content);
 
@@ -125,25 +127,32 @@ int received = httpd_req_recv(req, content, sizeof(content) - 1);
     char api_key[128] = "";
     char role_text[512] = "";
 
-    char *token = strtok(content, "&");
-while (token) {
-    char key[64] = "";
-    char value[512] = "";
-    if (sscanf(token, "%63[^=]=%511s", key, value) == 2) {
-        char decoded[512];
-        url_decode(decoded, sizeof(decoded), value);
-        if (strcmp(key, "wifi_ssid") == 0) {
-            strncpy(wifi_ssid, decoded, sizeof(wifi_ssid) - 1);
-        } else if (strcmp(key, "wifi_pass") == 0) {
-            strncpy(wifi_pass, decoded, sizeof(wifi_pass) - 1);
-        } else if (strcmp(key, "api_key") == 0) {
-            strncpy(api_key, decoded, sizeof(api_key) - 1);
-        } else if (strcmp(key, "role_text") == 0) {
-            strncpy(role_text, decoded, sizeof(role_text) - 1);
+    // Parsing manual: pisahkan dengan '&'
+    char *saveptr;
+    char *token = strtok_r(content, "&", &saveptr);
+    while (token != NULL) {
+        char *eq = strchr(token, '=');
+        if (eq != NULL) {
+            *eq = '\0';
+            const char *key = token;
+            const char *value = eq + 1;
+
+            // Decode URL
+            char decoded[512];
+            url_decode(decoded, sizeof(decoded), value);
+
+            if (strcmp(key, "wifi_ssid") == 0) {
+                strncpy(wifi_ssid, decoded, sizeof(wifi_ssid) - 1);
+            } else if (strcmp(key, "wifi_pass") == 0) {
+                strncpy(wifi_pass, decoded, sizeof(wifi_pass) - 1);
+            } else if (strcmp(key, "api_key") == 0) {
+                strncpy(api_key, decoded, sizeof(api_key) - 1);
+            } else if (strcmp(key, "role_text") == 0) {
+                strncpy(role_text, decoded, sizeof(role_text) - 1);
+            }
         }
+        token = strtok_r(NULL, "&", &saveptr);
     }
-    token = strtok(NULL, "&");
-}
 
     web_config_save(wifi_ssid, wifi_pass, api_key, role_text);
     ESP_LOGI(TAG, "Konfigurasi disimpan, restart...");
@@ -155,7 +164,6 @@ while (token) {
 
     return ESP_OK;
 }
-
 // ================== PUBLIC API (dibungkus extern C) ==================
 
 extern "C" {
