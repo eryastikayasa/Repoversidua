@@ -161,15 +161,72 @@ void begin_audio_turn(void)
 }
 bool queue_audio_pcm(const uint8_t *pcm, size_t len)
 {
-    if (pcm == NULL || len == 0) return false; len &= ~((size_t)1); if (len == 0) return false; if (audio_stream == NULL && !start_audio_playback()) return false; if (audio_stream == NULL) return false; if (audio_send_mutex == NULL) { ESP_LOGE(TAG, "Audio send mutex belum siap"); return false; }
-    if (xSemaphoreTake(audio_send_mutex, portMAX_DELAY) != pdTRUE) { ESP_LOGE(TAG, "Gagal mengambil audio send mutex"); return false; }
-    begin_audio_turn(); uint64_t queued_before = audio_bytes_queued; uint64_t dropped_before = audio_bytes_dropped;
+    if (pcm == NULL || len == 0) {
+        return false;
+    }
+
+    len &= ~((size_t)1);
+    if (len == 0) {
+        return false;
+    }
+
+    if (audio_stream == NULL && !start_audio_playback()) {
+        return false;
+    }
+    if (audio_stream == NULL) {
+        return false;
+    }
+
+    if (audio_send_mutex == NULL) {
+        ESP_LOGE(TAG, "Audio send mutex belum siap");
+        return false;
+    }
+
+    if (xSemaphoreTake(audio_send_mutex, portMAX_DELAY) != pdTRUE) {
+        ESP_LOGE(TAG, "Gagal mengambil audio send mutex");
+        return false;
+    }
+
+    begin_audio_turn();
+
+    uint64_t queued_before = audio_bytes_queued;
+    uint64_t dropped_before = audio_bytes_dropped;
+
+    // === VOLUME ACTIVE: scaling sebelum kirim ===
     if (gemini_volume_percent < 100) {
-        const int16_t *src = (const int16_t *)pcm; size_t total_samples = len / sizeof(int16_t); size_t offset = 0;
-        while (offset < total_samples) { size_t chunk = total_samples - offset; if (chunk > sizeof(volume_buffer) / sizeof(volume_buffer[0])) chunk = sizeof(volume_buffer) / sizeof(volume_buffer[0]); for (size_t i = 0; i < chunk; i++) volume_buffer[i] = (int16_t)(src[offset + i] * gemini_volume_percent / 100); send_realtime_pcm((const uint8_t *)volume_buffer, chunk * sizeof(int16_t)); offset += chunk; }
-    } else send_realtime_pcm(pcm, len);
-    const uint64_t queued_delta = audio_bytes_queued - queued_before; const uint64_t dropped_delta = audio_bytes_dropped - dropped_before; const uint64_t accounted_delta = queued_delta + dropped_delta;
-    if (accounted_delta < (uint64_t)len) { const uint64_t missing = (uint64_t)len - accounted_delta; audio_bytes_dropped += missing; ESP_LOGW(TAG, "Audio accounting guard: %llu byte -> dropped", (unsigned long long)missing); }
-    else if (accounted_delta > (uint64_t)len) ESP_LOGW(TAG, "Audio accounting anomaly: accounted_delta=%llu len=%u", (unsigned long long)accounted_delta, (unsigned)len);
-    xSemaphoreGive(audio_send_mutex); return queued_delta == (uint64_t)len;
+        const int16_t *src = (const int16_t *)pcm;
+        size_t total_samples = len / sizeof(int16_t);
+        size_t offset = 0;
+        while (offset < total_samples) {
+            size_t chunk = total_samples - offset;
+            if (chunk > sizeof(volume_buffer) / sizeof(volume_buffer[0])) {
+                chunk = sizeof(volume_buffer) / sizeof(volume_buffer[0]);
+            }
+            for (size_t i = 0; i < chunk; i++) {
+                volume_buffer[i] = (int16_t)(src[offset + i] * gemini_volume_percent / 100);
+            }
+            send_realtime_pcm((const uint8_t *)volume_buffer, chunk * sizeof(int16_t));
+            offset += chunk;
+        }
+    } else {
+        send_realtime_pcm(pcm, len);
+    }
+
+    const uint64_t queued_delta = audio_bytes_queued - queued_before;
+    const uint64_t dropped_delta = audio_bytes_dropped - dropped_before;
+    const uint64_t accounted_delta = queued_delta + dropped_delta;
+
+    if (accounted_delta < (uint64_t)len) {
+        const uint64_t missing = (uint64_t)len - accounted_delta;
+        audio_bytes_dropped += missing;
+        ESP_LOGW(TAG, "Audio accounting guard: %llu byte -> dropped",
+                 (unsigned long long)missing);
+    } else if (accounted_delta > (uint64_t)len) {
+        ESP_LOGW(TAG,
+                 "Audio accounting anomaly: accounted_delta=%llu len=%u",
+                 (unsigned long long)accounted_delta, (unsigned)len);
+    }
+
+    xSemaphoreGive(audio_send_mutex);
+    return queued_delta == (uint64_t)len;
 }
