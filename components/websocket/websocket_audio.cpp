@@ -128,7 +128,7 @@ static void audio_playback_task(void *arg)
                 } else {
                     ESP_LOGW(TAG, "Playback clear mutex busy - clear ditunda");
                     audio_clear_pending = true;
-                    vTaskDelay(pdMS_TO_TICKS(2));
+                    vTaskDelay(1);
                     continue;
                 }
             } else if (audio_stream != NULL) {
@@ -176,12 +176,12 @@ static void audio_playback_task(void *arg)
                                                pdMS_TO_TICKS(AUDIO_PLAYBACK_READ_WAIT_MS));
         if (received == 0) {
             check_audio_playback_complete();
-            vTaskDelay(pdMS_TO_TICKS(2));
+            vTaskDelay(1);
             continue;
         }
         received &= ~((size_t)1);
         if (received == 0) {
-            vTaskDelay(pdMS_TO_TICKS(2));
+            vTaskDelay(1);
             continue;
         }
 
@@ -213,7 +213,7 @@ static void audio_playback_task(void *arg)
             underrun_reported = false;
         }
 
-        vTaskDelay(pdMS_TO_TICKS(2));
+        vTaskDelay(1);
     }
 }
 
