@@ -479,8 +479,26 @@ void uart_rx_task(void *arg)
     while (1) {
         int len = uart_control_read(buf, sizeof(buf));
         if (len > 0) {
-            ESP_LOGI(TAG, "RX UART: %s", buf);
-            // Bisa tambahkan parsing "SUHU:" atau "CAHAYA:" di sini
+            // Filter hanya karakter yang dapat dicetak (printable)
+            bool printable = true;
+            for (int i = 0; i < len; i++) {
+                unsigned char c = (unsigned char)buf[i];
+                if (c < 0x20 && c != '\n' && c != '\r') {
+                    printable = false;
+                    break;
+                }
+                if (c > 0x7E) {
+                    printable = false;
+                    break;
+                }
+            }
+            if (printable) {
+                ESP_LOGI(TAG, "RX UART: %s", buf);
+                // Bisa tambahkan parsing "SUHU:" atau "CAHAYA:" di sini
+                // Contoh:
+                // if (strncmp(buf, "SUHU:", 5) == 0) { ... }
+                // else if (strncmp(buf, "CAHAYA:", 7) == 0) { ... }
+            }
         }
         vTaskDelay(pdMS_TO_TICKS(100));
     }
