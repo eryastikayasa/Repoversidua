@@ -52,7 +52,7 @@ static size_t rx_drop_received = 0;
 static size_t rx_capacity_for(size_t required)
 {
     if (required == 0 || required > WS_RX_SLOT_SIZE) return 0;
-    static const size_t buckets[] = { 5120, 8192, 12288, 16384, 20480, 24576, 32768, 40960 };
+    static const size_t buckets[] = { 5120, 8192, 12288, 16384, 20480, 24576, 32768, 40960, 49152, 65536 };
     for (size_t i = 0; i < sizeof(buckets) / sizeof(buckets[0]); ++i)
         if (required <= buckets[i]) return buckets[i];
     return 0;
@@ -71,7 +71,6 @@ static int reserve_slot(void)
     return -1;
 }
 
-/* Alokasi slot hanya dipakai saat prealokasi */
 static bool allocate_persistent_slot(int slot, size_t target)
 {
     if (slot < 0 || slot >= WS_RX_SLOT_COUNT || target == 0) return false;
@@ -87,24 +86,22 @@ static bool allocate_persistent_slot(int slot, size_t target)
     rx_slots[slot] = p;
     rx_slot_capacity[slot] = target;
     rx_slot_psram[slot] = psram;
-    ESP_LOGI(TAG, "RX slot persistent: slot=%d capacity=%u memory=%s",
-             slot, (unsigned)target, psram ? "PSRAM" : "internal");
+    ESP_LOGI(TAG, "RX slot persistent: slot=%d capacity=%u memory=%s", slot, (unsigned)target, psram ? "PSRAM" : "internal");
     return true;
 }
 
 static bool preallocate_rx_slots(void)
 {
     if (rx_slots_preallocated) return true;
-    /* 32 KB memberi ruang untuk payload 24 KB + terminator dan JSON overhead. */
     for (int i = 0; i < WS_RX_SLOT_COUNT; ++i) {
-        if (!allocate_persistent_slot(i, 32 * 1024)) {
+        if (!allocate_persistent_slot(i, WS_RX_SLOT_SIZE)) {
             ESP_LOGE(TAG, "Prealokasi slot gagal: slot=%d", i);
             return false;
         }
         release_slot(i);
     }
     rx_slots_preallocated = true;
-    ESP_LOGI(TAG, "Prealokasi RX slot selesai: %dx32KB", (unsigned)WS_RX_SLOT_COUNT);
+    ESP_LOGI(TAG, "Prealokasi RX slot selesai: %dx%uKB", (unsigned)WS_RX_SLOT_COUNT, (unsigned)(WS_RX_SLOT_SIZE / 1024));
     return true;
 }
 
@@ -114,8 +111,7 @@ static bool ensure_slot_buffer(int slot, size_t required_size)
     if (required_size > WS_RX_SLOT_SIZE - WS_RX_TERMINATOR_SIZE) return false;
     const size_t needed = required_size + WS_RX_TERMINATOR_SIZE;
     if (rx_slots[slot] && rx_slot_capacity[slot] >= needed) return true;
-    ESP_LOGE(TAG, "Slot %d tidak siap: cap=%u needed=%u",
-             slot, (unsigned)rx_slot_capacity[slot], (unsigned)needed);
+    ESP_LOGE(TAG, "Slot %d tidak siap: cap=%u needed=%u", slot, (unsigned)rx_slot_capacity[slot], (unsigned)needed);
     return false;
 }
 
@@ -129,8 +125,7 @@ static void free_rx_command(ws_rx_command_t *cmd)
 static bool stream_append_char(char c)
 {
     if (rx_stream_compact_len + 1 >= WS_RX_STREAM_COMPACT_SIZE) {
-        if (!rx_stream_failed)
-            ESP_LOGW(TAG, "RX stream compact JSON overflow: cap=%u", (unsigned)WS_RX_STREAM_COMPACT_SIZE);
+        if (!rx_stream_failed) ESP_LOGW(TAG, "RX stream compact JSON overflow: cap=%u", (unsigned)WS_RX_STREAM_COMPACT_SIZE);
         rx_stream_failed = true;
         return false;
     }
@@ -149,8 +144,7 @@ static bool stream_flush_pcm(void)
     audio_bytes_received += n;
     audio_chunks_received++;
     bool ok = queue_audio_pcm(rx_stream_pcm, n);
-    if (has_sisa) { rx_stream_pcm[0] = sisa; rx_stream_pcm_len = 1; }
-    else rx_stream_pcm_len = 0;
+    if (has_sisa) { rx_stream_pcm[0] = sisa; rx_stream_pcm_len = 1; } else rx_stream_pcm_len = 0;
     if (!ok) ESP_LOGW(TAG, "AUDIO STREAM: queue PCM gagal len=%u", (unsigned)n);
     return ok;
 }
@@ -159,13 +153,8 @@ static bool stream_decode_quad(void)
 {
     size_t out_len = 3;
     uint8_t out[3];
-    int ret = mbedtls_base64_decode(out, sizeof(out), &out_len,
-                                    (const unsigned char *)rx_stream_b64_quad, 4);
-    if (ret != 0) {
-        ESP_LOGW(TAG, "AUDIO STREAM: base64 quad gagal ret=-0x%04X", -ret);
-        rx_stream_failed = true;
-        return false;
-    }
+    int ret = mbedtls_base64_decode(out, sizeof(out), &out_len, (const unsigned char *)rx_stream_b64_quad, 4);
+    if (ret != 0) { ESP_LOGW(TAG, "AUDIO STREAM: base64 quad gagal ret=-0x%04X", -ret); rx_stream_failed = true; return false; }
     if (out_len > 0) {
         memcpy(rx_stream_pcm + rx_stream_pcm_len, out, out_len);
         rx_stream_pcm_len += out_len;
@@ -177,16 +166,12 @@ static bool stream_decode_quad(void)
 static bool stream_feed_base64_char(char c)
 {
     if (c == ' ' || c == '\t' || c == '\r' || c == '\n') return true;
-    if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-          (c >= '0' && c <= '9') || c == '+' || c == '/' || c == '=')) {
+    if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '+' || c == '/' || c == '=')) {
         rx_stream_failed = true;
         return false;
     }
     rx_stream_b64_quad[rx_stream_b64_len++] = c;
-    if (rx_stream_b64_len == 4) {
-        rx_stream_b64_len = 0;
-        return stream_decode_quad();
-    }
+    if (rx_stream_b64_len == 4) { rx_stream_b64_len = 0; return stream_decode_quad(); }
     return true;
 }
 
@@ -205,13 +190,11 @@ static bool stream_feed_char(char c)
             } else rx_stream_inline_match = 0;
         }
     }
-    if (rx_stream_state == 2) {
-        if (c == '"') {
-            rx_stream_in_inline = true;
-            rx_stream_audio_seen = true;
-            rx_stream_b64_len = 0;
-            rx_stream_state = 0;
-        }
+    if (rx_stream_state == 2 && c == '"') {
+        rx_stream_in_inline = true;
+        rx_stream_audio_seen = true;
+        rx_stream_b64_len = 0;
+        rx_stream_state = 0;
     }
     return stream_append_char(c);
 }
@@ -248,10 +231,7 @@ static void stream_discard_message(size_t payload_len, size_t received_len)
 {
     rx_drop_payload_len = payload_len;
     rx_drop_received = received_len;
-    if (rx_drop_received >= rx_drop_payload_len) {
-        rx_drop_payload_len = 0;
-        rx_drop_received = 0;
-    }
+    if (rx_drop_received >= rx_drop_payload_len) { rx_drop_payload_len = 0; rx_drop_received = 0; }
 }
 
 static void stream_queue_compact_message(uint32_t generation)
@@ -286,12 +266,8 @@ static void websocket_rx_task(void *arg)
         }
         if (ws_rx_reset_pending) { ws_rx_reset_pending = false; reset_rx_buffer(); }
         if (!cmd.buffer || cmd.len == 0) { release_slot(cmd.slot_id); memset(&cmd, 0, sizeof(cmd)); continue; }
-        if (cmd.generation != websocket_connection_generation || !is_connected) {
-            free_rx_command(&cmd); memset(&cmd, 0, sizeof(cmd)); continue;
-        }
-        int64_t process_start = esp_timer_get_time();
+        if (cmd.generation != websocket_connection_generation || !is_connected) { free_rx_command(&cmd); memset(&cmd, 0, sizeof(cmd)); continue; }
         process_gemini_message((const char *)cmd.buffer, (size_t)cmd.len);
-        (void)process_start;
         ++rx_complete_messages;
         free_rx_command(&cmd);
         memset(&cmd, 0, sizeof(cmd));
@@ -305,88 +281,45 @@ bool websocket_rx_init(void)
         websocket_rx_queue = xQueueCreate(WS_RX_QUEUE_LENGTH, sizeof(ws_rx_command_t));
         if (!websocket_rx_queue) { ESP_LOGE(TAG, "Gagal membuat RX queue"); return false; }
     }
-    if (!preallocate_rx_slots()) {
-        ESP_LOGE(TAG, "Prealokasi slot RX gagal, init dibatalkan");
-        return false;
-    }
+    if (!preallocate_rx_slots()) { ESP_LOGE(TAG, "Prealokasi slot RX gagal, init dibatalkan"); return false; }
     if (!websocket_rx_task_handle) {
-        if (xTaskCreate(websocket_rx_task, "ws_rx", 8192, NULL, 5,
-                        &websocket_rx_task_handle) != pdPASS) {
-            ESP_LOGE(TAG, "Gagal membuat RX worker"); return false;
-        }
+        if (xTaskCreate(websocket_rx_task, "ws_rx", 8192, NULL, 5, &websocket_rx_task_handle) != pdPASS) { ESP_LOGE(TAG, "Gagal membuat RX worker"); return false; }
     }
     return true;
 }
 
 void websocket_rx_request_reset(void) { ws_rx_reset_pending = true; }
-
 void websocket_rx_flush_queue(void)
 {
     if (!websocket_rx_queue) return;
     ws_rx_command_t stale = {};
     size_t flushed = 0;
-    while (xQueueReceive(websocket_rx_queue, &stale, 0) == pdTRUE) {
-        release_slot(stale.slot_id);
-        ++flushed;
-    }
+    while (xQueueReceive(websocket_rx_queue, &stale, 0) == pdTRUE) { release_slot(stale.slot_id); ++flushed; }
     if (flushed) ESP_LOGW(TAG, "RX queue dibersihkan: %u message", (unsigned)flushed);
 }
-
-void websocket_rx_note_invalid_json(size_t len)
-{
-    ++rx_invalid_json;
-    ESP_LOGW(TAG, "RX INVALID JSON #%lu: len=%u", (unsigned long)rx_invalid_json, (unsigned)len);
-}
+void websocket_rx_note_invalid_json(size_t len) { ++rx_invalid_json; ESP_LOGW(TAG, "RX INVALID JSON #%lu: len=%u", (unsigned long)rx_invalid_json, (unsigned)len); }
 
 bool websocket_rx_enqueue_data(esp_websocket_event_data_t *data, uint32_t generation)
 {
-    if (!data || !data->data_ptr || data->data_len <= 0 || data->payload_len <= 0 ||
-        data->payload_offset < 0 || generation != websocket_connection_generation || !is_connected) {
-        ++rx_fragments_dropped; return false;
-    }
+    if (!data || !data->data_ptr || data->data_len <= 0 || data->payload_len <= 0 || data->payload_offset < 0 || generation != websocket_connection_generation || !is_connected) { ++rx_fragments_dropped; return false; }
     ++rx_fragments_received;
     const size_t payload_len = (size_t)data->payload_len;
     const size_t offset = (size_t)data->payload_offset;
     const size_t len = (size_t)data->data_len;
     if (payload_len > rx_largest_payload) rx_largest_payload = (uint32_t)payload_len;
-    if (offset > payload_len || len > payload_len - offset) {
-        ++rx_fragments_dropped; ++rx_sequence_errors; return false;
-    }
+    if (offset > payload_len || len > payload_len - offset) { ++rx_fragments_dropped; ++rx_sequence_errors; return false; }
     if (rx_drop_payload_len != 0) {
-        if (offset == 0 && rx_drop_received != 0) {
-            ++rx_sequence_errors; rx_drop_payload_len = 0; rx_drop_received = 0;
-        } else {
-            ++rx_fragments_dropped;
-            if (offset == rx_drop_received) rx_drop_received += len;
-            else { ++rx_sequence_errors; rx_drop_received = offset + len; }
-            if (rx_drop_received >= rx_drop_payload_len) { rx_drop_payload_len = 0; rx_drop_received = 0; }
-            return true;
-        }
+        if (offset == 0 && rx_drop_received != 0) { ++rx_sequence_errors; rx_drop_payload_len = 0; rx_drop_received = 0; }
+        else { ++rx_fragments_dropped; if (offset == rx_drop_received) rx_drop_received += len; else { ++rx_sequence_errors; rx_drop_received = offset + len; } if (rx_drop_received >= rx_drop_payload_len) { rx_drop_payload_len = 0; rx_drop_received = 0; } return true; }
     }
     if (offset == 0) {
         if (ws_rx_active) { ++rx_fragments_dropped; ++rx_sequence_errors; reset_rx_buffer(); }
         ws_rx_streaming = payload_len > WS_RX_STREAM_THRESHOLD;
-        if (payload_len > WS_RX_MAX_PAYLOAD_SIZE) {
-            ++rx_fragments_dropped; ++rx_oversize_drops;
-            stream_discard_message(payload_len, len);
-            ESP_LOGW(TAG, "RX oversize: payload=%u limit=%u", (unsigned)payload_len,
-                     (unsigned)WS_RX_MAX_PAYLOAD_SIZE);
-            return false;
-        }
+        if (payload_len > WS_RX_MAX_PAYLOAD_SIZE) { ++rx_fragments_dropped; ++rx_oversize_drops; stream_discard_message(payload_len, len); ESP_LOGW(TAG, "RX oversize: payload=%u limit=%u", (unsigned)payload_len, (unsigned)WS_RX_MAX_PAYLOAD_SIZE); return false; }
         int slot = reserve_slot();
-        if (slot < 0) {
-            ++rx_fragments_dropped; ++rx_buffer_drops;
-            stream_discard_message(payload_len, len);
-            ESP_LOGW(TAG, "RX BUFFER DROP: no free slot payload=%u", (unsigned)payload_len);
-            return false;
-        }
+        if (slot < 0) { ++rx_fragments_dropped; ++rx_buffer_drops; stream_discard_message(payload_len, len); ESP_LOGW(TAG, "RX BUFFER DROP: no free slot payload=%u", (unsigned)payload_len); return false; }
         size_t required = ws_rx_streaming ? (WS_RX_STREAM_COMPACT_SIZE - 1) : payload_len;
-        if (!ensure_slot_buffer(slot, required)) {
-            release_slot((uint8_t)slot);
-            ++rx_fragments_dropped; ++rx_buffer_drops;
-            stream_discard_message(payload_len, len);
-            return false;
-        }
+        if (!ensure_slot_buffer(slot, required)) { release_slot((uint8_t)slot); ++rx_fragments_dropped; ++rx_buffer_drops; stream_discard_message(payload_len, len); return false; }
         rx_capture_slot = slot;
         ws_rx_received = 0;
         ws_rx_expected = payload_len;
@@ -396,14 +329,9 @@ bool websocket_rx_enqueue_data(esp_websocket_event_data_t *data, uint32_t genera
         reset_stream_state();
     }
     if (rx_capture_slot < 0 || !ws_rx_active) return false;
-    if (offset != ws_rx_received) {
-        ++rx_sequence_errors;
-        reset_rx_buffer();
-        return false;
-    }
+    if (offset != ws_rx_received) { ++rx_sequence_errors; reset_rx_buffer(); return false; }
     if (ws_rx_streaming) {
-        for (size_t i = 0; i < len; ++i)
-            if (!stream_feed_char((char)data->data_ptr[i])) { reset_rx_buffer(); return false; }
+        for (size_t i = 0; i < len; ++i) if (!stream_feed_char((char)data->data_ptr[i])) { reset_rx_buffer(); return false; }
     } else {
         memcpy(rx_slots[rx_capture_slot] + offset, data->data_ptr, len);
     }
@@ -419,14 +347,8 @@ bool websocket_rx_enqueue_data(esp_websocket_event_data_t *data, uint32_t genera
             cmd.len = (uint32_t)ws_rx_received;
             cmd.slot_id = (uint8_t)rx_capture_slot;
             rx_slots[rx_capture_slot][ws_rx_received] = '\0';
-            if (xQueueSend(websocket_rx_queue, &cmd, 0) != pdTRUE) {
-                ++rx_fragments_dropped; ++rx_queue_drops;
-                release_slot(cmd.slot_id);
-            } else {
-                UBaseType_t waiting = uxQueueMessagesWaiting(websocket_rx_queue);
-                if (waiting > rx_queue_high_water) rx_queue_high_water = waiting;
-                rx_capture_slot = -1;
-            }
+            if (xQueueSend(websocket_rx_queue, &cmd, 0) != pdTRUE) { ++rx_fragments_dropped; ++rx_queue_drops; release_slot(cmd.slot_id); }
+            else { UBaseType_t waiting = uxQueueMessagesWaiting(websocket_rx_queue); if (waiting > rx_queue_high_water) rx_queue_high_water = waiting; rx_capture_slot = -1; }
         }
         ws_rx_active = false;
     }
