@@ -450,6 +450,8 @@ static void audio_task(void *arg)
             if (!audio_turn_active) {
                 if (has_activity) {
                     websocket_send_audio_data(audio_buffer, 3200);
+                    // *** PERUBAHAN: tambahkan jeda 5 ms untuk mencegah antrian TX penuh ***
+                    vTaskDelay(pdMS_TO_TICKS(5));
                 } else {
                     silent_frames++;
                     int64_t now_log = esp_timer_get_time();
