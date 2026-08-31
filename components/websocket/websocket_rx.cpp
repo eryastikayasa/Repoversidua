@@ -289,7 +289,7 @@ bool websocket_rx_init(void)
         return false; 
     }
     if (!websocket_rx_task_handle) {
-        if (xTaskCreatePinnedToCore(websocket_rx_task, "ws_rx", 8192, NULL, 6, 
+        if (xTaskCreatePinnedToCore(websocket_rx_task, "ws_rx", 8192, NULL, 7, 
                                     &websocket_rx_task_handle, 0) != pdPASS) { 
             ESP_LOGE(TAG, "Gagal membuat RX worker"); 
             return false; 
