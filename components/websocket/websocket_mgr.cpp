@@ -149,48 +149,22 @@ static void websocket_tx_task(void *arg)
                     if (cmd.generation != websocket_connection_generation || !is_connected || websocket_tx_error || client != ws || !esp_websocket_client_is_connected(ws)) {
                         break;
                     }
-
                     if (attempt > 0) {
                         vTaskDelay(AUDIO_SEND_RETRY_DELAY);
-                        if (cmd.generation != websocket_connection_generation || !is_connected || websocket_tx_error || client != ws || !esp_websocket_client_is_connected(ws)) {
-                            break;
-                        }
+                        if (cmd.generation != websocket_connection_generation || !is_connected || websocket_tx_error || client != ws || !esp_websocket_client_is_connected(ws)) break;
                     }
-
-                    int sent = esp_websocket_client_send_text(
-                        ws,
-                        json_buf,
-                        json_len,
-                        AUDIO_SEND_TIMEOUT);
+                    int sent = esp_websocket_client_send_text(ws, json_buf, json_len, AUDIO_SEND_TIMEOUT);
                     if (sent == json_len) {
                         chunk_sent = true;
                         vTaskDelay(pdMS_TO_TICKS(10));
                         break;
                     }
-
-                    ESP_LOGW(
-                        TAG,
-                        "TX audio write timeout/fail: attempt=%d sent=%d expected=%d pcm_chunk=%u offset=%u/%u timeout=3000ms",
-                        attempt + 1,
-                        sent,
-                        json_len,
-                        (unsigned)chunk_len,
-                        (unsigned)offset,
-                        (unsigned)cmd.len);
+                    ESP_LOGW(TAG, "TX audio write timeout/fail: attempt=%d sent=%d expected=%d pcm_chunk=%u offset=%u/%u timeout=3000ms", attempt + 1, sent, json_len, (unsigned)chunk_len, (unsigned)offset, (unsigned)cmd.len);
                 }
-
-                if (!chunk_sent) {
-                    send_failed = true;
-                    break;
-                }
-
+                if (!chunk_sent) { send_failed = true; break; }
                 offset += chunk_len;
             }
-
-            if (send_failed) {
-                ESP_LOGW(TAG, "TX audio command dihentikan: sent_pcm=%u/%u",
-                         (unsigned)offset, (unsigned)cmd.len);
-            }
+            if (send_failed) ESP_LOGW(TAG, "TX audio command dihentikan: sent_pcm=%u/%u", (unsigned)offset, (unsigned)cmd.len);
             free(audio_data);
             continue;
         }
@@ -239,22 +213,18 @@ void websocket_app_start(void)
     ESP_LOGI(TAG, "Memulai Gemini WebSocket V7.0.22");
     if (!wifi_is_ready() || client || ws_started || ws_need_destroy) return;
     if (!start_audio_playback()) return;
-    clear_audio_buffer(); reset_audio_turn_stats(); reset_rx_buffer(); websocket_tx_flush_queue();
+    clear_audio_buffer(); reset_audio_turn_stats(); websocket_rx_request_reset(); websocket_tx_flush_queue();
     if (!websocket_tx_init() || !websocket_rx_init()) return;
     is_connected = false; setup_complete = false; websocket_tx_error = false; ws_started = false;
 
-    // === Ambil API key dari NVS ===
     char api_key[128];
     if (!web_config_load_api_key(api_key, sizeof(api_key))) {
         ESP_LOGE(TAG, "API key tidak ditemukan di NVS");
         return;
     }
 
-    // === Bangun URL WebSocket dinamis ===
     char ws_url[256];
-    snprintf(ws_url, sizeof(ws_url),
-             "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=%s",
-             api_key);
+    snprintf(ws_url, sizeof(ws_url), "wss://generativelanguage.googleapis.com/ws/google.ai.generativel.v1beta.GenerativeService.BidiGenerateContent?key=%s", api_key);
 
     esp_websocket_client_config_t cfg = {};
     cfg.uri = ws_url;
@@ -263,7 +233,6 @@ void websocket_app_start(void)
     cfg.cert_common_name = "generativelanguage.googleapis.com";
     cfg.network_timeout_ms = 15000;
     cfg.disable_auto_reconnect = true;
-
     cfg.keep_alive_enable = true;
     cfg.keep_alive_idle = 30;
     cfg.keep_alive_interval = 10;
@@ -287,9 +256,7 @@ bool websocket_is_connected(void)
 
 void websocket_disconnect(void)
 {
-    if (client != NULL) {
-        esp_websocket_client_close(client, pdMS_TO_TICKS(1000));
-    }
+    if (client != NULL) esp_websocket_client_close(client, pdMS_TO_TICKS(1000));
 }
 
 void websocket_reset_started(void)
