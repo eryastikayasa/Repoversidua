@@ -32,6 +32,8 @@ extern TaskHandle_t websocket_tx_task_handle;
 bool websocket_tx_init(void);
 bool websocket_tx_enqueue_audio(const uint8_t *data, size_t len, uint32_t generation);
 void websocket_tx_flush_queue(void);
+
+/* RX command owns a processing copy allocated outside the transport slot. */
 typedef struct { uint32_t generation; uint8_t *buffer; uint32_t len; uint8_t slot_id; } ws_rx_command_t;
 extern QueueHandle_t websocket_rx_queue;
 extern TaskHandle_t websocket_rx_task_handle;
@@ -65,7 +67,6 @@ extern uint64_t audio_bytes_dropped;
 void websocket_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data);
 void reset_rx_buffer(void);
 bool ensure_rx_buffer(size_t required_size);
-void process_websocket_payload(esp_websocket_event_data_t *data);
 void process_gemini_message(const char *json, size_t len);
 bool build_gemini_setup(char **output, size_t *output_len);
 void clear_session_handle(void);
