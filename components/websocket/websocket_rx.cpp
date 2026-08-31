@@ -283,7 +283,7 @@ bool websocket_rx_init(void)
     }
     if (!preallocate_rx_slots()) { ESP_LOGE(TAG, "Prealokasi slot RX gagal, init dibatalkan"); return false; }
     if (!websocket_rx_task_handle) {
-        if (xTaskCreate(websocket_rx_task, "ws_rx", 8192, NULL, 6, &websocket_rx_task_handle) != pdPASS) { ESP_LOGE(TAG, "Gagal membuat RX worker"); return false; }
+        if xTaskCreatePinnedToCore(websocket_rx_task, "ws_rx", 8192, NULL, 6, &websocket_rx_task_handle, 0) != pdPASS) { ESP_LOGE(TAG, "Gagal membuat RX worker"); return false; }
     }
     return true;
 }
