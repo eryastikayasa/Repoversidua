@@ -1,7 +1,6 @@
 #include "audio_hal.h"
 #include "esp_log.h"
 #include "esp_err.h"
-#include "esp_timer.h"
 #include "driver/i2s_std.h"
 #include "freertos/FreeRTOS.h"
 #include <stdint.h>
@@ -66,39 +65,24 @@ void audio_write_speaker(const uint8_t *src, size_t len)
     size_t total = len / sizeof(int16_t), offset = 0;
     constexpr size_t I2S_WRITE_SAMPLES = 128;
     constexpr uint32_t I2S_WRITE_TIMEOUT_MS = 10;
-    const int64_t function_start_us = esp_timer_get_time();
-    int64_t max_i2s_write_us = 0;
 
     while (offset < total) {
         size_t n = total - offset;
         if (n > I2S_WRITE_SAMPLES) n = I2S_WRITE_SAMPLES;
-        for (size_t i = 0; i < n; ++i) {
-            tx_buffer[i] = static_cast<int32_t>(pcm[offset + i]) << 16;
-        }
+        for (size_t i = 0; i < n; ++i) tx_buffer[i] = static_cast<int32_t>(pcm[offset + i]) << 16;
         size_t written = 0;
-        const int64_t write_start_us = esp_timer_get_time();
         esp_err_t err = i2s_channel_write(tx_handle, tx_buffer, n * sizeof(int32_t), &written, I2S_WRITE_TIMEOUT_MS);
-        const int64_t write_elapsed_us = esp_timer_get_time() - write_start_us;
-        if (write_elapsed_us > max_i2s_write_us) max_i2s_write_us = write_elapsed_us;
         size_t samples_written = written / sizeof(int32_t);
         if (samples_written > n) samples_written = n;
         offset += samples_written;
         if (err != ESP_OK || samples_written == 0) {
-            ESP_LOGW(TAG, "I2S speaker write timeout/fail: err=%s written=%u/%u timeout=%ums elapsed=%lldus",
+            ESP_LOGW(TAG, "I2S speaker write timeout/fail: err=%s written=%u/%u timeout=%ums",
                      esp_err_to_name(err), (unsigned)written, (unsigned)(n * sizeof(int32_t)),
-                     (unsigned)I2S_WRITE_TIMEOUT_MS, (long long)write_elapsed_us);
+                     (unsigned)I2S_WRITE_TIMEOUT_MS);
             vTaskDelay(1);
             return;
         }
         vTaskDelay(1);
-    }
-
-    const int64_t total_elapsed_us = esp_timer_get_time() - function_start_us;
-    if (total_elapsed_us > 20000) {
-        ESP_LOGW(TAG, "I2S PLAYBACK SLOW: bytes=%u total=%lldus max_write=%lldus chunks=%u",
-                 (unsigned)len, (long long)total_elapsed_us,
-                 (long long)max_i2s_write_us,
-                 (unsigned)((total + I2S_WRITE_SAMPLES - 1) / I2S_WRITE_SAMPLES));
     }
 }
 
