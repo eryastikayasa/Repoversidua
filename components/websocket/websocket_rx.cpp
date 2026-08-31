@@ -6,9 +6,9 @@
 
 static const char *TAG = "WS_RX";
 
-// RX slot ownership is deliberately kept separate from queue ownership.
-// A slot is returned immediately after the queued command has been consumed.
-// This prevents the RX pool from being held by slow downstream processing.
+// RX slots are only transport staging buffers.  They must be released as
+// soon as the WebSocket callback has copied the frame out of the slot.
+// JSON/cJSON/audio processing is intentionally done on a separate heap copy.
 struct rx_slot_t {
     uint8_t *buffer;
     bool in_use;
@@ -50,6 +50,19 @@ static void slot_release(uint8_t slot_id)
     }
 }
 
+static uint8_t *alloc_process_buffer(size_t len)
+{
+    // Keep the processing copy in PSRAM so RX slots and internal RAM remain
+    // available for the WebSocket/I2S scheduler.
+    uint8_t *p = static_cast<uint8_t *>(
+        heap_caps_malloc(len + WS_RX_TERMINATOR_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!p) {
+        p = static_cast<uint8_t *>(
+            heap_caps_malloc(len + WS_RX_TERMINATOR_SIZE, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    }
+    return p;
+}
+
 static void websocket_rx_task(void *)
 {
     ws_rx_command_t cmd{};
@@ -58,13 +71,16 @@ static void websocket_rx_task(void *)
         if (xQueueReceive(websocket_rx_queue, &cmd, portMAX_DELAY) != pdTRUE)
             continue;
 
-        // Copy all information needed by the processor before releasing the slot.
-        // process_websocket_payload() must not retain cmd.buffer after returning.
-        process_websocket_payload(reinterpret_cast<esp_websocket_event_data_t *>(&cmd));
+        if (cmd.buffer != nullptr && cmd.len > 0) {
+            // process_gemini_message() is length-aware and performs the
+            // compact-audio fast path before cJSON parsing.
+            process_gemini_message(reinterpret_cast<const char *>(cmd.buffer), cmd.len);
+        }
 
-        // CRITICAL: release immediately after processing one frame.
-        // Never wait for the next WebSocket frame, audio playback, or JSON response.
-        slot_release(cmd.slot_id);
+        if (cmd.buffer != nullptr) {
+            heap_caps_free(cmd.buffer);
+            cmd.buffer = nullptr;
+        }
     }
 }
 
@@ -84,7 +100,12 @@ bool websocket_rx_init(void)
 
     for (uint8_t i = 0; i < WS_RX_SLOT_COUNT; ++i) {
         s_slots[i].buffer = static_cast<uint8_t *>(heap_caps_malloc(
-            WS_RX_SLOT_SIZE, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+            WS_RX_SLOT_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        if (!s_slots[i].buffer) {
+            // Fallback only if PSRAM allocation is unavailable.
+            s_slots[i].buffer = static_cast<uint8_t *>(heap_caps_malloc(
+                WS_RX_SLOT_SIZE, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+        }
         if (!s_slots[i].buffer) {
             ESP_LOGE(TAG, "RX slot %u allocation failed", i);
             for (uint8_t j = 0; j < i; ++j) heap_caps_free(s_slots[j].buffer);
@@ -109,7 +130,7 @@ bool websocket_rx_init(void)
         return false;
     }
 
-    ESP_LOGI(TAG, "RX pool ready: %u slots x %u bytes, task priority=7",
+    ESP_LOGI(TAG, "RX pool ready: %u slots x %u bytes, task priority=7, slot release=immediate",
              WS_RX_SLOT_COUNT, WS_RX_SLOT_SIZE);
     return true;
 }
@@ -119,7 +140,9 @@ bool websocket_rx_enqueue_data(esp_websocket_event_data_t *data, uint32_t genera
     if (!data || !data->data_ptr || data->data_len <= 0 || !websocket_rx_queue)
         return false;
 
-    if ((size_t)data->data_len > WS_RX_SLOT_SIZE)
+    // Reserve one byte for the NUL terminator used by the compact-audio
+    // fast path (strstr/memmove). Keep the existing 64 KB slot size.
+    if ((size_t)data->data_len >= WS_RX_SLOT_SIZE)
         return false;
 
     uint8_t slot_id = 0;
@@ -128,18 +151,31 @@ bool websocket_rx_enqueue_data(esp_websocket_event_data_t *data, uint32_t genera
         return false;
     }
 
-    memcpy(s_slots[slot_id].buffer, data->data_ptr, data->data_len);
+    rx_slot_t &slot = s_slots[slot_id];
+    memcpy(slot.buffer, data->data_ptr, data->data_len);
+    slot.buffer[data->data_len] = '\0';
+
+    // Make a PSRAM processing copy, then release the transport slot BEFORE
+    // JSON/cJSON/audio work starts. This is the key change that prevents the
+    // WebSocket callback from exhausting the RX slot pool during bursts.
+    uint8_t *process_buffer = alloc_process_buffer((size_t)data->data_len);
+    if (!process_buffer) {
+        slot_release(slot_id);
+        ESP_LOGW(TAG, "RX process buffer allocation failed: len=%d", data->data_len);
+        return false;
+    }
+    memcpy(process_buffer, slot.buffer, (size_t)data->data_len + WS_RX_TERMINATOR_SIZE);
+    slot_release(slot_id);
 
     ws_rx_command_t cmd{};
     cmd.generation = generation;
-    cmd.buffer = s_slots[slot_id].buffer;
+    cmd.buffer = process_buffer;
     cmd.len = (uint32_t)data->data_len;
-    cmd.slot_id = slot_id;
+    cmd.slot_id = 0;
 
-    // Queue only owns the small descriptor. The slot remains occupied until
-    // websocket_rx_task finishes processing this exact frame.
     if (xQueueSend(websocket_rx_queue, &cmd, 0) != pdTRUE) {
-        slot_release(slot_id);
+        heap_caps_free(process_buffer);
+        ESP_LOGW(TAG, "RX processing queue full: dropping frame len=%d", data->data_len);
         return false;
     }
 
@@ -152,7 +188,7 @@ void websocket_rx_flush_queue(void)
 
     ws_rx_command_t cmd{};
     while (xQueueReceive(websocket_rx_queue, &cmd, 0) == pdTRUE) {
-        slot_release(cmd.slot_id);
+        if (cmd.buffer) heap_caps_free(cmd.buffer);
     }
 }
 
