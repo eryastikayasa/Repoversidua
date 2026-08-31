@@ -199,6 +199,11 @@ static void audio_playback_task(void *arg)
         audio_bytes_played += received;
         check_audio_playback_complete();
 
+        // Keep the main playback loop from running continuously at priority 1.
+        // The I2S layer already yields 1 tick per 128-sample chunk; this adds a
+        // 5 ms scheduler window between larger playback-buffer iterations.
+        vTaskDelay(pdMS_TO_TICKS(5));
+
         int64_t now_us = esp_timer_get_time();
         if (last_stats_us == 0 || now_us - last_stats_us >= 1000000) {
             last_stats_us = now_us;
@@ -216,9 +221,6 @@ static void audio_playback_task(void *arg)
             playback_started = false;
             underrun_reported = false;
         }
-
-        // audio_write_speaker() already performs vTaskDelay(1) after every
-        // 128-sample I2S chunk. Do not add taskYIELD() here; IDLE1 is priority 0.
     }
 }
 
@@ -255,10 +257,10 @@ bool start_audio_playback(void)
         return false;
     }
 
-    // Keep audio playback pinned to CPU1, priority 1.
-    BaseType_t result = xTaskCreatePinnedToCore(audio_playback_task, "audio_playback",
-                                                4096, NULL, 1,
-                                                &audio_playback_task_handle, 1);
+    // Do not pin playback. Let the scheduler choose the available core.
+    BaseType_t result = xTaskCreate(audio_playback_task, "audio_playback",
+                                    4096, NULL, 1,
+                                    &audio_playback_task_handle);
     if (result != pdPASS) {
         ESP_LOGE(TAG, "Gagal membuat audio_task/playback task: free_internal=%u largest=%u",
                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
@@ -268,7 +270,7 @@ bool start_audio_playback(void)
         audio_playback_task_handle = NULL;
         return false;
     }
-    ESP_LOGI(TAG, "Audio ring buffer siap: %u byte, prebuffer=%u, target=%u B/s, playback core=1 priority=1",
+    ESP_LOGI(TAG, "Audio ring buffer siap: %u byte, prebuffer=%u, target=%u B/s, playback core=auto priority=1",
              (unsigned)AUDIO_RING_BUFFER_SIZE,
              (unsigned)AUDIO_PLAYBACK_PREBUFFER_SIZE,
              (unsigned)AUDIO_OUTPUT_BYTES_PER_SEC);
