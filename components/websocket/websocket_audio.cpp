@@ -213,7 +213,7 @@ static void audio_playback_task(void *arg)
             underrun_reported = false;
         }
 
-        vTaskDelay(1);
+        vTaskDelay(pdMS_TO_TICKS(2));   // 20 ms dengan tick 100 Hz
     }
 }
 
@@ -251,7 +251,7 @@ bool start_audio_playback(void)
     }
 
     BaseType_t result = xTaskCreatePinnedToCore(audio_playback_task, "audio_playback",
-                                                4096, NULL, 4,
+                                                4096, NULL, 3,
                                                 &audio_playback_task_handle, 1);
     if (result != pdPASS) {
         ESP_LOGE(TAG, "Gagal membuat audio_task/playback task: free_internal=%u largest=%u",
@@ -262,7 +262,7 @@ bool start_audio_playback(void)
         audio_playback_task_handle = NULL;
         return false;
     }
-    ESP_LOGI(TAG, "Audio ring buffer siap: %u byte, prebuffer=%u, target=%u B/s",
+    ESP_LOGI(TAG, "Audio ring buffer siap: %u byte, prebuffer=%u, target=%u B/s, playback core=1 priority=3",
              (unsigned)AUDIO_RING_BUFFER_SIZE,
              (unsigned)AUDIO_PLAYBACK_PREBUFFER_SIZE,
              (unsigned)AUDIO_OUTPUT_BYTES_PER_SEC);
