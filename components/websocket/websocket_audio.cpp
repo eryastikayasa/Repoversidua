@@ -31,12 +31,6 @@ static SemaphoreHandle_t audio_send_mutex = NULL;
 #define AUDIO_SEND_CHUNK_SIZE          512
 #define AUDIO_SEND_WAIT_MS             50
 
-// Scheduler guard: keep the CPU1 audio task responsive to IDLE1/WDT.
-// The audio format/path is unchanged; this only controls how often the
-// playback task explicitly yields after a bounded amount of PCM work.
-#define AUDIO_PLAYBACK_YIELD_EVERY_BYTES 2048U
-#define AUDIO_PLAYBACK_YIELD_MS           1U
-
 static volatile uint32_t audio_turn_generation = 0;
 
 static size_t send_realtime_pcm(const uint8_t *data, size_t len)
@@ -119,7 +113,6 @@ static void audio_playback_task(void *arg)
     bool underrun_reported = false;
     uint32_t playback_generation = 0;
     int64_t last_stats_us = 0;
-    uint32_t bytes_since_yield = 0;
 
     ESP_LOGI(TAG, "Audio playback task: 24kHz PCM16 mono, ring=%u, prebuffer=%u, core=%d priority=1",
              (unsigned)AUDIO_RING_BUFFER_SIZE,
@@ -147,8 +140,7 @@ static void audio_playback_task(void *arg)
             playback_started = false;
             underrun_reported = false;
             playback_generation = audio_turn_generation;
-            bytes_since_yield = 0;
-            taskYIELD();
+            vTaskDelay(1);
         }
 
         uint32_t current_generation = audio_turn_generation;
@@ -156,8 +148,7 @@ static void audio_playback_task(void *arg)
             playback_generation = current_generation;
             playback_started = false;
             underrun_reported = false;
-            bytes_since_yield = 0;
-            taskYIELD();
+            vTaskDelay(1);
         }
 
         if (audio_stream == NULL) {
@@ -188,13 +179,11 @@ static void audio_playback_task(void *arg)
                                                pdMS_TO_TICKS(AUDIO_PLAYBACK_READ_WAIT_MS));
         if (received == 0) {
             check_audio_playback_complete();
-            bytes_since_yield = 0;
             vTaskDelay(pdMS_TO_TICKS(2));
             continue;
         }
         received &= ~((size_t)1);
         if (received == 0) {
-            bytes_since_yield = 0;
             vTaskDelay(pdMS_TO_TICKS(2));
             continue;
         }
@@ -208,37 +197,28 @@ static void audio_playback_task(void *arg)
         audio_write_speaker(playback_buffer, received);
         audio_write_calls++;
         audio_bytes_played += received;
-        bytes_since_yield += (uint32_t)received;
         check_audio_playback_complete();
 
         int64_t now_us = esp_timer_get_time();
         if (last_stats_us == 0 || now_us - last_stats_us >= 1000000) {
             last_stats_us = now_us;
             ESP_LOGI(TAG,
-                     "AUDIO FLOW: pending=%u/%u received=%llu queued=%llu played=%llu dropped=%llu yield_bytes=%u",
+                     "AUDIO FLOW: pending=%u/%u received=%llu queued=%llu played=%llu dropped=%llu",
                      (unsigned)xStreamBufferBytesAvailable(audio_stream),
                      (unsigned)AUDIO_RING_BUFFER_SIZE,
                      (unsigned long long)audio_bytes_received,
                      (unsigned long long)audio_bytes_queued,
                      (unsigned long long)audio_bytes_played,
-                     (unsigned long long)audio_bytes_dropped,
-                     (unsigned)bytes_since_yield);
+                     (unsigned long long)audio_bytes_dropped);
         }
 
         if (!audio_turn_active && xStreamBufferBytesAvailable(audio_stream) == 0) {
             playback_started = false;
             underrun_reported = false;
-            bytes_since_yield = 0;
         }
 
-        // Explicit scheduler checkpoint. The task remains pinned to CPU1,
-        // but never runs an unbounded sequence of playback iterations.
-        if (bytes_since_yield >= AUDIO_PLAYBACK_YIELD_EVERY_BYTES) {
-            bytes_since_yield = 0;
-            vTaskDelay(pdMS_TO_TICKS(AUDIO_PLAYBACK_YIELD_MS));
-        } else {
-            taskYIELD();
-        }
+        // audio_write_speaker() already performs vTaskDelay(1) after every
+        // 128-sample I2S chunk. Do not add taskYIELD() here; IDLE1 is priority 0.
     }
 }
 
@@ -275,8 +255,7 @@ bool start_audio_playback(void)
         return false;
     }
 
-    // Keep audio playback pinned to CPU1; scheduler behavior is handled
-    // inside audio_playback_task above.
+    // Keep audio playback pinned to CPU1, priority 1.
     BaseType_t result = xTaskCreatePinnedToCore(audio_playback_task, "audio_playback",
                                                 4096, NULL, 1,
                                                 &audio_playback_task_handle, 1);
@@ -372,7 +351,6 @@ bool queue_audio_pcm(const uint8_t *pcm, size_t len)
     uint64_t queued_before = audio_bytes_queued;
     uint64_t dropped_before = audio_bytes_dropped;
 
-    // === VOLUME ACTIVE: scaling sebelum kirim ===
     if (gemini_volume_percent < 100) {
         const int16_t *src = (const int16_t *)pcm;
         size_t total_samples = len / sizeof(int16_t);
