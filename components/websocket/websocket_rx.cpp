@@ -279,11 +279,21 @@ bool websocket_rx_init(void)
 {
     if (!websocket_rx_queue) {
         websocket_rx_queue = xQueueCreate(WS_RX_QUEUE_LENGTH, sizeof(ws_rx_command_t));
-        if (!websocket_rx_queue) { ESP_LOGE(TAG, "Gagal membuat RX queue"); return false; }
+        if (!websocket_rx_queue) { 
+            ESP_LOGE(TAG, "Gagal membuat RX queue"); 
+            return false; 
+        }
     }
-    if (!preallocate_rx_slots()) { ESP_LOGE(TAG, "Prealokasi slot RX gagal, init dibatalkan"); return false; }
+    if (!preallocate_rx_slots()) { 
+        ESP_LOGE(TAG, "Prealokasi slot RX gagal, init dibatalkan"); 
+        return false; 
+    }
     if (!websocket_rx_task_handle) {
-        if xTaskCreatePinnedToCore(websocket_rx_task, "ws_rx", 8192, NULL, 6, &websocket_rx_task_handle, 0) != pdPASS) { ESP_LOGE(TAG, "Gagal membuat RX worker"); return false; }
+        if (xTaskCreatePinnedToCore(websocket_rx_task, "ws_rx", 8192, NULL, 6, 
+                                    &websocket_rx_task_handle, 0) != pdPASS) { 
+            ESP_LOGE(TAG, "Gagal membuat RX worker"); 
+            return false; 
+        }
     }
     return true;
 }
