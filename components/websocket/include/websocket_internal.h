@@ -13,7 +13,7 @@
 #define WS_RX_MAX_PAYLOAD_SIZE (48 * 1024)
 #define WS_RX_SLOT_SIZE (64 * 1024)
 /* v7.0.35: persistent RX slots sized above the largest observed Gemini frame. */
-#define WS_RX_SLOT_COUNT 16
+#define WS_RX_SLOT_COUNT 32
 #define WS_RX_TERMINATOR_SIZE 1
 #define WS_RX_STREAM_THRESHOLD (8 * 1024)
 #define WS_RX_STREAM_COMPACT_SIZE (64 * 1024)
