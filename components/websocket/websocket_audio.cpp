@@ -26,7 +26,7 @@ static SemaphoreHandle_t audio_send_mutex = NULL;
 #define AUDIO_RING_BUFFER_SIZE         (512 * 1024)
 #define AUDIO_PLAYBACK_PREBUFFER_SIZE  (128 * 1024)
 #define AUDIO_PLAYBACK_READ_SIZE       2048
-#define AUDIO_PLAYBACK_READ_WAIT_MS    5
+#define AUDIO_PLAYBACK_READ_WAIT_MS    10
 #define AUDIO_PLAYBACK_TRIGGER_SIZE    1024
 #define AUDIO_SEND_CHUNK_SIZE          512
 #define AUDIO_SEND_WAIT_MS             50
@@ -129,7 +129,7 @@ static void audio_playback_task(void *arg)
                 } else {
                     ESP_LOGW(TAG, "Playback clear mutex busy - clear ditunda");
                     audio_clear_pending = true;
-                    vTaskDelay(pdMS_TO_TICKS(2));
+                    vTaskDelay(1);
                     continue;
                 }
             } else if (audio_stream != NULL) {
@@ -160,7 +160,7 @@ static void audio_playback_task(void *arg)
 
         if (!playback_started && pending < AUDIO_PLAYBACK_PREBUFFER_SIZE &&
             audio_turn_active && !audio_turn_complete_pending) {
-            vTaskDelay(pdMS_TO_TICKS(5));
+            vTaskDelay(1);
             continue;
         }
 
@@ -170,7 +170,7 @@ static void audio_playback_task(void *arg)
                 ESP_LOGW(TAG, "AUDIO PLAYBACK UNDERRUN: PCM buffer kosong di tengah turn");
                 underrun_reported = true;
             }
-            vTaskDelay(pdMS_TO_TICKS(AUDIO_PLAYBACK_READ_WAIT_MS));
+            vTaskDelay(1);
             continue;
         }
 
@@ -179,12 +179,12 @@ static void audio_playback_task(void *arg)
                                                pdMS_TO_TICKS(AUDIO_PLAYBACK_READ_WAIT_MS));
         if (received == 0) {
             check_audio_playback_complete();
-            vTaskDelay(pdMS_TO_TICKS(2));
+            vTaskDelay(1);
             continue;
         }
         received &= ~((size_t)1);
         if (received == 0) {
-            vTaskDelay(pdMS_TO_TICKS(2));
+            vTaskDelay(1);
             continue;
         }
 
@@ -199,10 +199,7 @@ static void audio_playback_task(void *arg)
         audio_bytes_played += received;
         check_audio_playback_complete();
 
-        // Keep the main playback loop from running continuously at priority 1.
-        // The I2S layer already yields 1 tick per 128-sample chunk; this adds a
-        // 5 ms scheduler window between larger playback-buffer iterations.
-        vTaskDelay(pdMS_TO_TICKS(5));
+        vTaskDelay(1);
 
         int64_t now_us = esp_timer_get_time();
         if (last_stats_us == 0 || now_us - last_stats_us >= 1000000) {
@@ -257,7 +254,6 @@ bool start_audio_playback(void)
         return false;
     }
 
-    // Do not pin playback. Let the scheduler choose the available core.
     BaseType_t result = xTaskCreate(audio_playback_task, "audio_playback",
                                     4096, NULL, 1,
                                     &audio_playback_task_handle);
