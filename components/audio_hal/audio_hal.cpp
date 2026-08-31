@@ -66,50 +66,43 @@ void audio_write_speaker(const uint8_t *src, size_t len)
     const int16_t *pcm = reinterpret_cast<const int16_t *>(src);
     size_t total = len / sizeof(int16_t), offset = 0;
 
-    /*
-     * v7.0.34: keep the bounded I2S write from v7.0.33, but also yield after
-     * every successful DMA chunk. v7.0.33 only yielded when I2S stalled; a
-     * stream of successful 512-sample writes could still keep audio_playback
-     * runnable on CPU1 long enough to starve IDLE1 and trigger Task WDT.
-     *
-     * ESP-IDF 6.x uses a millisecond timeout for i2s_channel_write().
-     * Do not pass portMAX_DELAY here: that value is an RTOS tick sentinel,
-     * not an I2S timeout in milliseconds. Bound each DMA wait so a stalled
-     * speaker path cannot monopolize CPU1 and starve IDLE1/WDT.
-     *
-     * 512 PCM samples = 21.3 ms of 24 kHz audio in the 32-bit I2S path.
-     * The explicit scheduler yield below gives other CPU1 tasks a chance
-     * between chunks without changing the I2S format or DMA configuration.
-     */
-    constexpr size_t I2S_WRITE_SAMPLES = 512;
-    constexpr uint32_t I2S_WRITE_TIMEOUT_MS = 50;
+    // Scheduler-only change: smaller DMA chunks give IDLE1 a real scheduling
+    // window more frequently. Audio format, rate, channel and conversion stay
+    // unchanged from the proven baseline.
+    constexpr size_t I2S_WRITE_SAMPLES = 128;
+    constexpr uint32_t I2S_WRITE_TIMEOUT_MS = 10;
 
     while (offset < total) {
-        size_t n = total - offset; if (n > I2S_WRITE_SAMPLES) n = I2S_WRITE_SAMPLES;
-        for (size_t i = 0; i < n; ++i) tx_buffer[i] = static_cast<int32_t>(pcm[offset + i]) << 16;
+        size_t n = total - offset;
+        if (n > I2S_WRITE_SAMPLES) n = I2S_WRITE_SAMPLES;
+
+        for (size_t i = 0; i < n; ++i) {
+            tx_buffer[i] = static_cast<int32_t>(pcm[offset + i]) << 16;
+        }
 
         size_t written = 0;
-        esp_err_t err = i2s_channel_write(tx_handle, tx_buffer, n * sizeof(int32_t), &written, I2S_WRITE_TIMEOUT_MS);
+        esp_err_t err = i2s_channel_write(tx_handle,
+                                           tx_buffer,
+                                           n * sizeof(int32_t),
+                                           &written,
+                                           I2S_WRITE_TIMEOUT_MS);
         size_t samples_written = written / sizeof(int32_t);
         if (samples_written > n) samples_written = n;
         offset += samples_written;
 
         if (err != ESP_OK || samples_written == 0) {
-            ESP_LOGW(TAG, "I2S speaker write timeout/fail: err=%s written=%u/%u timeout=%ums",
-                     esp_err_to_name(err), (unsigned)written,
-                     (unsigned)(n * sizeof(int32_t)), (unsigned)I2S_WRITE_TIMEOUT_MS);
-            /* Give CPU1's lower-priority idle task a real scheduling window
-             * before returning from a stalled DMA path. */
+            ESP_LOGW(TAG,
+                     "I2S speaker write timeout/fail: err=%s written=%u/%u timeout=%ums",
+                     esp_err_to_name(err),
+                     (unsigned)written,
+                     (unsigned)(n * sizeof(int32_t)),
+                     (unsigned)I2S_WRITE_TIMEOUT_MS);
+            // Real blocking window for CPU1 IDLE1/WDT before returning.
             vTaskDelay(1);
             return;
         }
 
-        /*
-         * v7.0.34 scheduler yield:
-         * Never let a long sequence of successful audio writes monopolize
-         * CPU1. This is a scheduling change only; I2S timing/format remains
-         * exactly the v6.1.5 locked baseline.
-         */
+        // Required scheduler yield after every successful 128-sample chunk.
         vTaskDelay(1);
     }
 }
