@@ -113,7 +113,7 @@ static void audio_playback_task(void *arg)
     bool underrun_reported = false;
     uint32_t playback_generation = 0;
     int64_t last_stats_us = 0;
-    ESP_LOGI(TAG, "Audio playback task: 24kHz PCM16 mono, ring=%u, prebuffer=%u, core=%d priority=3",
+    ESP_LOGI(TAG, "Audio playback task: 24kHz PCM16 mono, ring=%u, prebuffer=%u, core=%d priority=1",
              (unsigned)AUDIO_RING_BUFFER_SIZE,
              (unsigned)AUDIO_PLAYBACK_PREBUFFER_SIZE,
              xPortGetCoreID());
@@ -176,12 +176,12 @@ static void audio_playback_task(void *arg)
                                                pdMS_TO_TICKS(AUDIO_PLAYBACK_READ_WAIT_MS));
         if (received == 0) {
             check_audio_playback_complete();
-            vTaskDelay(1);
+            vTaskDelay(pdMS_TO_TICKS(2));   // sebelumnya vTaskDelay(1)
             continue;
         }
         received &= ~((size_t)1);
         if (received == 0) {
-            vTaskDelay(1);
+            vTaskDelay(pdMS_TO_TICKS(2));   // sebelumnya vTaskDelay(1)
             continue;
         }
 
@@ -213,7 +213,7 @@ static void audio_playback_task(void *arg)
             underrun_reported = false;
         }
 
-        vTaskDelay(pdMS_TO_TICKS(2));   // 20 ms dengan tick 100 Hz
+        vTaskDelay(pdMS_TO_TICKS(2));   // akhir loop, beri waktu untuk task lain
     }
 }
 
@@ -250,8 +250,9 @@ bool start_audio_playback(void)
         return false;
     }
 
+    // Prioritas diturunkan menjadi 1 agar tidak memonopoli CPU1
     BaseType_t result = xTaskCreatePinnedToCore(audio_playback_task, "audio_playback",
-                                                4096, NULL, 3,
+                                                4096, NULL, 1,
                                                 &audio_playback_task_handle, 1);
     if (result != pdPASS) {
         ESP_LOGE(TAG, "Gagal membuat audio_task/playback task: free_internal=%u largest=%u",
@@ -262,7 +263,7 @@ bool start_audio_playback(void)
         audio_playback_task_handle = NULL;
         return false;
     }
-    ESP_LOGI(TAG, "Audio ring buffer siap: %u byte, prebuffer=%u, target=%u B/s, playback core=1 priority=3",
+    ESP_LOGI(TAG, "Audio ring buffer siap: %u byte, prebuffer=%u, target=%u B/s, playback core=1 priority=1",
              (unsigned)AUDIO_RING_BUFFER_SIZE,
              (unsigned)AUDIO_PLAYBACK_PREBUFFER_SIZE,
              (unsigned)AUDIO_OUTPUT_BYTES_PER_SEC);
