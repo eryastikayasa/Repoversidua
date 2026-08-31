@@ -115,40 +115,25 @@ static void websocket_tx_task(void *arg)
                     send_failed = true;
                     break;
                 }
-
                 size_t chunk_len = cmd.len - offset;
                 if (chunk_len > PCM_SEND_CHUNK) chunk_len = PCM_SEND_CHUNK;
-
                 size_t encoded_len = 0;
-                int ret = mbedtls_base64_encode(
-                    (unsigned char *)b64_buf,
-                    sizeof(b64_buf) - 1,
-                    &encoded_len,
-                    audio_data + offset,
-                    chunk_len);
+                int ret = mbedtls_base64_encode((unsigned char *)b64_buf, sizeof(b64_buf) - 1, &encoded_len, audio_data + offset, chunk_len);
                 if (ret != 0) {
                     ESP_LOGW(TAG, "TX audio base64 gagal: ret=%d chunk=%u", ret, (unsigned)chunk_len);
                     send_failed = true;
                     break;
                 }
                 b64_buf[encoded_len] = '\0';
-
-                int json_len = snprintf(
-                    json_buf,
-                    sizeof(json_buf),
-                    "{\"realtimeInput\":{\"audio\":{\"mimeType\":\"audio/pcm;rate=16000\",\"data\":\"%s\"}}}",
-                    b64_buf);
+                int json_len = snprintf(json_buf, sizeof(json_buf), "{\"realtimeInput\":{\"audio\":{\"mimeType\":\"audio/pcm;rate=16000\",\"data\":\"%s\"}}}", b64_buf);
                 if (json_len < 0 || (size_t)json_len >= sizeof(json_buf)) {
                     ESP_LOGW(TAG, "TX audio JSON terlalu besar: chunk=%u", (unsigned)chunk_len);
                     send_failed = true;
                     break;
                 }
-
                 bool chunk_sent = false;
                 for (int attempt = 0; attempt <= AUDIO_SEND_RETRIES; ++attempt) {
-                    if (cmd.generation != websocket_connection_generation || !is_connected || websocket_tx_error || client != ws || !esp_websocket_client_is_connected(ws)) {
-                        break;
-                    }
+                    if (cmd.generation != websocket_connection_generation || !is_connected || websocket_tx_error || client != ws || !esp_websocket_client_is_connected(ws)) break;
                     if (attempt > 0) {
                         vTaskDelay(AUDIO_SEND_RETRY_DELAY);
                         if (cmd.generation != websocket_connection_generation || !is_connected || websocket_tx_error || client != ws || !esp_websocket_client_is_connected(ws)) break;
