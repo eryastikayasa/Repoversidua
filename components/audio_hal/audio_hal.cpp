@@ -28,8 +28,6 @@ void audio_hal_init(void)
     rx_cfg.gpio_cfg.dout = I2S_GPIO_UNUSED; rx_cfg.gpio_cfg.din = MIC_I2S_SD;
     ESP_ERROR_CHECK(i2s_channel_init_std_mode(rx_handle, &rx_cfg));
 
-    // Keep the proven v6.1.5 MAX98357A format: 32-bit I2S slots, LEFT, Philips.
-    // Gemini audio remains PCM16/24k; conversion happens only at the I2S boundary.
     i2s_std_config_t tx_cfg = {};
     tx_cfg.clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(SPK_SAMPLE_RATE);
     tx_cfg.slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_MONO);
@@ -65,44 +63,27 @@ void audio_write_speaker(const uint8_t *src, size_t len)
     static int32_t tx_buffer[1024];
     const int16_t *pcm = reinterpret_cast<const int16_t *>(src);
     size_t total = len / sizeof(int16_t), offset = 0;
-
-    // Scheduler-only change: smaller DMA chunks give IDLE1 a real scheduling
-    // window more frequently. Audio format, rate, channel and conversion stay
-    // unchanged from the proven baseline.
     constexpr size_t I2S_WRITE_SAMPLES = 128;
     constexpr uint32_t I2S_WRITE_TIMEOUT_MS = 10;
 
     while (offset < total) {
         size_t n = total - offset;
         if (n > I2S_WRITE_SAMPLES) n = I2S_WRITE_SAMPLES;
-
         for (size_t i = 0; i < n; ++i) {
             tx_buffer[i] = static_cast<int32_t>(pcm[offset + i]) << 16;
         }
-
         size_t written = 0;
-        esp_err_t err = i2s_channel_write(tx_handle,
-                                           tx_buffer,
-                                           n * sizeof(int32_t),
-                                           &written,
-                                           I2S_WRITE_TIMEOUT_MS);
+        esp_err_t err = i2s_channel_write(tx_handle, tx_buffer, n * sizeof(int32_t), &written, I2S_WRITE_TIMEOUT_MS);
         size_t samples_written = written / sizeof(int32_t);
         if (samples_written > n) samples_written = n;
         offset += samples_written;
-
         if (err != ESP_OK || samples_written == 0) {
-            ESP_LOGW(TAG,
-                     "I2S speaker write timeout/fail: err=%s written=%u/%u timeout=%ums",
-                     esp_err_to_name(err),
-                     (unsigned)written,
-                     (unsigned)(n * sizeof(int32_t)),
+            ESP_LOGW(TAG, "I2S speaker write timeout/fail: err=%s written=%u/%u timeout=%ums",
+                     esp_err_to_name(err), (unsigned)written, (unsigned)(n * sizeof(int32_t)),
                      (unsigned)I2S_WRITE_TIMEOUT_MS);
-            // Real blocking window for CPU1 IDLE1/WDT before returning.
             vTaskDelay(1);
             return;
         }
-
-        // Required scheduler yield after every successful 128-sample chunk.
         vTaskDelay(1);
     }
 }
