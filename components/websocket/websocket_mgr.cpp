@@ -2,7 +2,6 @@
 #include "websocket_internal.h"
 #include "display.h"
 #include "wifi_manager.h"
-#include "web_config.h"
 #include "esp_log.h"
 #include "esp_websocket_client.h"
 #include "esp_crt_bundle.h"
@@ -36,11 +35,11 @@ uint32_t audio_write_calls = 0;
 uint64_t audio_bytes_played = 0;
 uint64_t audio_bytes_dropped = 0;
 static volatile bool ws_started = false;
-volatile bool ws_need_destroy = false;
 QueueHandle_t websocket_tx_queue = NULL;
 TaskHandle_t websocket_tx_task_handle = NULL;
 QueueHandle_t websocket_rx_queue = NULL;
 TaskHandle_t websocket_rx_task_handle = NULL;
+static TaskHandle_t websocket_cleanup_task_handle = NULL;
 
 void websocket_tx_flush_queue(void)
 {
@@ -66,23 +65,41 @@ static void websocket_tx_fail(void)
     ESP_LOGW(TAG, "TX failure: audio producer dihentikan, generation=%lu", (unsigned long)generation);
 }
 
+static void websocket_cleanup_task(void *arg)
+{
+    (void)arg;
+    ESP_LOGI(TAG, "WebSocket lifecycle cleanup worker siap");
+    for (;;) {
+        if (websocket_cleanup_is_pending()) {
+            /* FINISH is delivered by the websocket task. Only after FINISH do
+             * we destroy the client, and this worker is a different FreeRTOS
+             * task, avoiding esp_websocket_client lifecycle lock recursion. */
+            esp_websocket_client_handle_t ws = client;
+            if (ws != NULL && !esp_websocket_client_is_connected(ws)) {
+                ESP_LOGI(TAG, "Cleanup worker: destroy client dari task manager");
+                esp_err_t err = esp_websocket_client_destroy(ws);
+                if (err == ESP_OK) {
+                    client = NULL;
+                    websocket_cleanup_complete();
+                    ESP_LOGI(TAG, "Cleanup worker: client berhasil dihancurkan");
+                } else {
+                    ESP_LOGW(TAG, "Cleanup worker: destroy ditunda, err=0x%x", (unsigned)err);
+                }
+            } else if (ws == NULL) {
+                websocket_cleanup_complete();
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+}
+
 static void websocket_tx_task(void *arg)
 {
     (void)arg;
     ws_tx_command_t cmd = {};
     ESP_LOGI(TAG, "WebSocket TX worker dimulai - V7.0.32");
     for (;;) {
-        if (ws_need_destroy) {
-            ws_need_destroy = false;
-            if (client != NULL) {
-                esp_websocket_client_handle_t ws = client;
-                client = NULL;
-                esp_websocket_client_destroy(ws);
-                ESP_LOGI(TAG, "WebSocket client dihancurkan oleh TX worker");
-            }
-        }
-
-        if (xQueueReceive(websocket_tx_queue, &cmd, pdMS_TO_TICKS(100)) != pdTRUE) continue;
+        if (xQueueReceive(websocket_tx_queue, &cmd, portMAX_DELAY) != pdTRUE) continue;
         uint8_t *audio_data = cmd.data;
         cmd.data = NULL;
         if (cmd.generation != websocket_connection_generation || !is_connected || websocket_tx_error || !client) { free(audio_data); continue; }
@@ -102,7 +119,7 @@ static void websocket_tx_task(void *arg)
         if (cmd.type == WS_TX_COMMAND_AUDIO) {
             static char b64_buf[2300];
             static char json_buf[2500];
-            constexpr size_t PCM_SEND_CHUNK = 800;
+            constexpr size_t PCM_SEND_CHUNK = 1600;
             constexpr TickType_t AUDIO_SEND_TIMEOUT = pdMS_TO_TICKS(3000);
             constexpr TickType_t AUDIO_SEND_RETRY_DELAY = pdMS_TO_TICKS(30);
             constexpr int AUDIO_SEND_RETRIES = 1;
@@ -115,41 +132,55 @@ static void websocket_tx_task(void *arg)
                     send_failed = true;
                     break;
                 }
+
                 size_t chunk_len = cmd.len - offset;
                 if (chunk_len > PCM_SEND_CHUNK) chunk_len = PCM_SEND_CHUNK;
+
                 size_t encoded_len = 0;
-                int ret = mbedtls_base64_encode((unsigned char *)b64_buf, sizeof(b64_buf) - 1, &encoded_len, audio_data + offset, chunk_len);
+                int ret = mbedtls_base64_encode(
+                    (unsigned char *)b64_buf,
+                    sizeof(b64_buf) - 1,
+                    &encoded_len,
+                    audio_data + offset,
+                    chunk_len);
                 if (ret != 0) {
                     ESP_LOGW(TAG, "TX audio base64 gagal: ret=%d chunk=%u", ret, (unsigned)chunk_len);
                     send_failed = true;
                     break;
                 }
                 b64_buf[encoded_len] = '\0';
-                int json_len = snprintf(json_buf, sizeof(json_buf), "{\"realtimeInput\":{\"audio\":{\"mimeType\":\"audio/pcm;rate=16000\",\"data\":\"%s\"}}}", b64_buf);
+
+                int json_len = snprintf(
+                    json_buf,
+                    sizeof(json_buf),
+                    "{\"realtimeInput\":{\"audio\":{\"mimeType\":\"audio/pcm;rate=16000\",\"data\":\"%s\"}}}",
+                    b64_buf);
                 if (json_len < 0 || (size_t)json_len >= sizeof(json_buf)) {
                     ESP_LOGW(TAG, "TX audio JSON terlalu besar: chunk=%u", (unsigned)chunk_len);
                     send_failed = true;
                     break;
                 }
+
                 bool chunk_sent = false;
                 for (int attempt = 0; attempt <= AUDIO_SEND_RETRIES; ++attempt) {
-                    if (cmd.generation != websocket_connection_generation || !is_connected || websocket_tx_error || client != ws || !esp_websocket_client_is_connected(ws)) break;
+                    if (cmd.generation != websocket_connection_generation || !is_connected || websocket_tx_error || client != ws || !esp_websocket_client_is_connected(ws)) {
+                        break;
+                    }
                     if (attempt > 0) {
                         vTaskDelay(AUDIO_SEND_RETRY_DELAY);
                         if (cmd.generation != websocket_connection_generation || !is_connected || websocket_tx_error || client != ws || !esp_websocket_client_is_connected(ws)) break;
                     }
                     int sent = esp_websocket_client_send_text(ws, json_buf, json_len, AUDIO_SEND_TIMEOUT);
-                    if (sent == json_len) {
-                        chunk_sent = true;
-                        vTaskDelay(pdMS_TO_TICKS(10));
-                        break;
-                    }
-                    ESP_LOGW(TAG, "TX audio write timeout/fail: attempt=%d sent=%d expected=%d pcm_chunk=%u offset=%u/%u timeout=3000ms", attempt + 1, sent, json_len, (unsigned)chunk_len, (unsigned)offset, (unsigned)cmd.len);
+                    if (sent == json_len) { chunk_sent = true; break; }
+                    ESP_LOGW(TAG, "TX audio write timeout/fail: attempt=%d sent=%d expected=%d pcm_chunk=%u offset=%u/%u timeout=3000ms",
+                             attempt + 1, sent, json_len, (unsigned)chunk_len, (unsigned)offset, (unsigned)cmd.len);
                 }
                 if (!chunk_sent) { send_failed = true; break; }
                 offset += chunk_len;
             }
-            if (send_failed) ESP_LOGW(TAG, "TX audio command dihentikan: sent_pcm=%u/%u", (unsigned)offset, (unsigned)cmd.len);
+            if (send_failed) {
+                ESP_LOGW(TAG, "TX audio command dihentikan: sent_pcm=%u/%u", (unsigned)offset, (unsigned)cmd.len);
+            }
             free(audio_data);
             continue;
         }
@@ -165,6 +196,9 @@ bool websocket_tx_init(void)
     }
     if (!websocket_tx_task_handle) {
         if (xTaskCreate(websocket_tx_task, "ws_tx", 8192, NULL, 4, &websocket_tx_task_handle) != pdPASS) return false;
+    }
+    if (!websocket_cleanup_task_handle) {
+        if (xTaskCreate(websocket_cleanup_task, "ws_cleanup", 3072, NULL, 3, &websocket_cleanup_task_handle) != pdPASS) return false;
     }
     return true;
 }
@@ -196,23 +230,13 @@ void websocket_schedule_setup(uint32_t generation)
 void websocket_app_start(void)
 {
     ESP_LOGI(TAG, "Memulai Gemini WebSocket V7.0.22");
-    if (!wifi_is_ready() || client || ws_started || ws_need_destroy) return;
+    if (!wifi_is_ready() || client || ws_started) return;
     if (!start_audio_playback()) return;
-    clear_audio_buffer(); reset_audio_turn_stats(); websocket_rx_request_reset(); websocket_tx_flush_queue();
+    clear_audio_buffer(); reset_audio_turn_stats(); reset_rx_buffer(); websocket_tx_flush_queue();
     if (!websocket_tx_init() || !websocket_rx_init()) return;
     is_connected = false; setup_complete = false; websocket_tx_error = false; ws_started = false;
-
-    char api_key[128];
-    if (!web_config_load_api_key(api_key, sizeof(api_key))) {
-        ESP_LOGE(TAG, "API key tidak ditemukan di NVS");
-        return;
-    }
-
-    char ws_url[256];
-    snprintf(ws_url, sizeof(ws_url), "wss://generativelanguage.googleapis.com/ws/google.ai.generativel.v1beta.GenerativeService.BidiGenerateContent?key=%s", api_key);
-
     esp_websocket_client_config_t cfg = {};
-    cfg.uri = ws_url;
+    cfg.uri = WEBSOCKET_SERVER_URL;
     cfg.crt_bundle_attach = esp_crt_bundle_attach;
     cfg.skip_cert_common_name_check = false;
     cfg.cert_common_name = "generativelanguage.googleapis.com";
@@ -222,7 +246,7 @@ void websocket_app_start(void)
     cfg.keep_alive_idle = 30;
     cfg.keep_alive_interval = 10;
     cfg.keep_alive_count = 3;
-    cfg.buffer_size = 16384;
+    cfg.buffer_size = 8192;
     ESP_LOGI(TAG, "V7.0.32 DIAGNOSTIC: PING ON, audio write timeout=3000ms, retry=1, retry_delay=30ms");
 
     client = esp_websocket_client_init(&cfg);
@@ -241,7 +265,10 @@ bool websocket_is_connected(void)
 
 void websocket_disconnect(void)
 {
-    if (client != NULL) esp_websocket_client_close(client, pdMS_TO_TICKS(1000));
+    /* Called by audio/main task, never from websocket event callback. */
+    if (client != NULL) {
+        esp_websocket_client_close(client, pdMS_TO_TICKS(1000));
+    }
 }
 
 void websocket_reset_started(void)
