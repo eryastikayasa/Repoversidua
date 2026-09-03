@@ -2,12 +2,16 @@
 #include "web_config.h"
 #include "esp_log.h"
 #include "esp_websocket_client.h"
-#include "cJSON.h"
+#include "esp_crt_bundle.h"
+#include "mbedtls/base64.h"
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 static const char *TAG = "WS_TX";
 
-/* Runtime WebSocket URL. API key berasal dari NVS/web_config. */
+/* Repoversisatu WebSocket TX logic is preserved.
+ * Only the API-key source is adapted for WebConfig/NVS. */
 const char *websocket_get_server_url(void)
 {
     static char url[256];
@@ -67,65 +71,4 @@ void websocket_send_audio_data(
             "Audio frame tidak masuk TX queue"
         );
     }
-}
-
-/*
- * Gemini Live API meminta tool response kembali melalui WebSocket.
- * Tool response dikirim setelah eksekusi command selesai.
- */
-bool websocket_send_tool_response(const char *id, const char *name, bool success)
-{
-    if (!id || !name || !client || !is_connected || !setup_complete || websocket_tx_error) {
-        return false;
-    }
-
-    cJSON *root = cJSON_CreateObject();
-    cJSON *tool_response = cJSON_CreateObject();
-    cJSON *function_responses = cJSON_CreateArray();
-    cJSON *function_response = cJSON_CreateObject();
-    cJSON *response = cJSON_CreateObject();
-
-    if (!root || !tool_response || !function_responses ||
-        !function_response || !response) {
-        cJSON_Delete(root);
-        cJSON_Delete(tool_response);
-        cJSON_Delete(function_responses);
-        cJSON_Delete(function_response);
-        cJSON_Delete(response);
-        return false;
-    }
-
-    cJSON_AddStringToObject(function_response, "id", id);
-    cJSON_AddStringToObject(function_response, "name", name);
-    cJSON_AddStringToObject(response, "result", success ? "ok" : "error");
-    cJSON_AddItemToObject(function_response, "response", response);
-    cJSON_AddItemToArray(function_responses, function_response);
-    cJSON_AddItemToObject(tool_response, "functionResponses", function_responses);
-    cJSON_AddItemToObject(root, "toolResponse", tool_response);
-
-    char *json = cJSON_PrintUnformatted(root);
-    cJSON_Delete(root);
-
-    if (!json) {
-        return false;
-    }
-
-    if (!client || !is_connected || !setup_complete || websocket_tx_error) {
-        free(json);
-        return false;
-    }
-
-    int json_len = (int)strlen(json);
-    int sent = esp_websocket_client_send_text(
-        client,
-        json,
-        json_len,
-        pdMS_TO_TICKS(3000));
-
-    bool ok = sent == json_len;
-    ESP_LOGI(TAG, "Tool response %s: id=%s name=%s sent=%d/%d",
-             ok ? "terkirim" : "gagal", id, name, sent, json_len);
-
-    free(json);
-    return ok;
 }
