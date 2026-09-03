@@ -137,7 +137,7 @@ static void add_device_control_tool(cJSON *setup)
         "fan_on", "fan_off", "fan_pwr", "fan_speed", "fan_swing", "fan_mode",
         "mp3_mode", "mp3_play", "mp3_eq",
         "m_led", "m_mute", "m_musik", "m_cek",
-        "cek_suhu", "cek_cahaya", 
+        "cek_suhu", "cek_cahaya",
           // Gemini Face commands
         "face_idle",
         "face_listening",
@@ -198,7 +198,8 @@ bool build_gemini_setup(char **output, size_t *output_len)
     "Setelah hasil fungsi berhasil, jawab pengguna secara natural, singkat, dan ramah dalam bahasa Indonesia. "
     "Jangan pernah mengucapkan nama command UART kepada pengguna.";
 
-    char role_text[512] = "";
+    static EXT_RAM_BSS_ATTR char role_text[512];
+    role_text[0] = '\0';
     if (web_config_load_role(role_text, sizeof(role_text)) && role_text[0] != '\0') {
         size_t base_len = strlen(base_system_prompt);
         size_t role_len = strlen(role_text);
