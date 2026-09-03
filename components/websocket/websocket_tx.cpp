@@ -4,18 +4,6 @@
 
 static const char *TAG = "WS_TX";
 
-/*
- * Audio capture task TIDAK lagi melakukan TLS/WebSocket write.
- * Fungsi ini hanya menyalin frame PCM16 ke TX queue.
- *
- * Semua esp_websocket_client_send_text() dilakukan oleh
- * websocket_tx_task() di websocket_mgr.cpp.
- *
- * V7.0.14:
- * Queue menggunakan kebijakan realtime: jika penuh, frame lama
- * dapat diganti oleh frame terbaru di TX manager. Tujuannya
- * mencegah backlog audio ketika jaringan sedang tersendat.
- */
 void websocket_send_audio_data(
     const uint8_t *data,
     size_t len
