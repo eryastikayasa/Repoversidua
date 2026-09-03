@@ -28,7 +28,7 @@ static const char *HTML_FORM = R"rawliteral(
 <title>ESP32 Config</title>
 <style>
   body { font-family: sans-serif; background: #1e1e24; color: #f0f0f5; padding: 20px; }
-  input, textarea { width: 100%; padding: 10px; margin: 6px 0; border-radius: 6px; border: 1px solid #333; background: #121216; color: #fff; }
+  input, textarea { width: 100%; padding: 10px; margin: 6px 0; border-radius: 6px; border: 1px solid #333; background: #121216; color: #fff; box-sizing: border-box; }
   button { width: 100%; padding: 12px; background: #4338ca; color: white; border: none; border-radius: 6px; font-weight: bold; }
 </style>
 </head>
@@ -40,26 +40,23 @@ static const char *HTML_FORM = R"rawliteral(
   <label>Password WiFi</label>
   <input type="password" name="wifi_pass">
   <label>API Key Gemini</label>
-  <input type="text" name="api_key" required>
-  <label>Nama Panggilan AI</label>
-  <input type="text" name="ai_name" value="ESP">
+  <input type="password" name="api_key" required>
   <label>Ingatan / Kepribadian AI</label>
-  <textarea name="role_text" rows="6" placeholder="Nama saya Bima, istri Sari, anak Raka, suka kopi pahit..."></textarea>
-  <button type="submit">Simpan</button>
+  <textarea name="role_text" rows="6" placeholder="Nama saya Bima, suka kopi pahit..."></textarea>
+  <button type="submit">Simpan & Restart</button>
 </form>
 </body>
 </html>
 )rawliteral";
 
-// ================== NVS HELPERS (internal, tidak perlu extern C) ==================
-
 static void url_decode(char *dst, size_t dst_len, const char *src)
 {
     if (!dst || !src || dst_len == 0) return;
+    size_t src_len = strlen(src);
     size_t i = 0, j = 0;
     while (src[i] && j < dst_len - 1) {
-        if (src[i] == '%' && i + 2 < strlen(src)) {
-            int h;
+        if (src[i] == '%' && i + 2 < src_len) {
+            unsigned int h = 0;
             if (sscanf(src + i + 1, "%2x", &h) == 1) {
                 dst[j++] = (char)h;
                 i += 3;
@@ -78,19 +75,18 @@ static void url_decode(char *dst, size_t dst_len, const char *src)
 
 static bool nvs_get_str_safe(const char *key, char *out, size_t max_len)
 {
+    if (!key || !out || max_len == 0) return false;
     nvs_handle_t handle;
-    if (nvs_open(CONFIG_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) {
-        return false;
-    }
+    if (nvs_open(CONFIG_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) return false;
     size_t len = max_len;
     esp_err_t err = nvs_get_str(handle, key, out, &len);
     nvs_close(handle);
-    return err == ESP_OK && len > 0;
+    return err == ESP_OK && out[0] != '\0';
 }
 
 static void nvs_set_str_safe(const char *key, const char *value)
 {
-    if (value == NULL) return;
+    if (!key || !value) return;
     nvs_handle_t handle;
     if (nvs_open(CONFIG_NAMESPACE, NVS_READWRITE, &handle) == ESP_OK) {
         nvs_set_str(handle, key, value);
@@ -98,8 +94,6 @@ static void nvs_set_str_safe(const char *key, const char *value)
         nvs_close(handle);
     }
 }
-
-// ================== HTTP HANDLERS (internal) ==================
 
 static esp_err_t root_get_handler(httpd_req_t *req)
 {
@@ -112,23 +106,19 @@ static esp_err_t save_post_handler(httpd_req_t *req)
 {
     char content[2048];
     int total = 0;
-    int received = 0;
     while (total < (int)sizeof(content) - 1) {
-        received = httpd_req_recv(req, content + total, sizeof(content) - 1 - total);
+        int received = httpd_req_recv(req, content + total, sizeof(content) - 1 - total);
         if (received <= 0) break;
         total += received;
     }
     content[total] = '\0';
-
-    ESP_LOGI(TAG, "POST data: %s", content);
 
     char wifi_ssid[64] = "";
     char wifi_pass[64] = "";
     char api_key[128] = "";
     char role_text[512] = "";
 
-    // Parsing manual: pisahkan dengan '&'
-    char *saveptr;
+    char *saveptr = NULL;
     char *token = strtok_r(content, "&", &saveptr);
     while (token != NULL) {
         char *eq = strchr(token, '=');
@@ -136,9 +126,7 @@ static esp_err_t save_post_handler(httpd_req_t *req)
             *eq = '\0';
             const char *key = token;
             const char *value = eq + 1;
-
-            // Decode URL
-            char decoded[512];
+            char decoded[512] = "";
             url_decode(decoded, sizeof(decoded), value);
 
             if (strcmp(key, "wifi_ssid") == 0) {
@@ -154,44 +142,78 @@ static esp_err_t save_post_handler(httpd_req_t *req)
         token = strtok_r(NULL, "&", &saveptr);
     }
 
+    if (wifi_ssid[0] == '\0' || api_key[0] == '\0') {
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_sendstr(req, "SSID WiFi dan API Key wajib diisi.");
+        return ESP_OK;
+    }
+
     web_config_save(wifi_ssid, wifi_pass, api_key, role_text);
-    ESP_LOGI(TAG, "Konfigurasi disimpan, restart...");
+    ESP_LOGI(TAG, "Konfigurasi WiFi/API key/role berhasil disimpan, restart...");
 
-    httpd_resp_sendstr(req, "OK. Restart...");
-
+    httpd_resp_sendstr(req, "OK. Konfigurasi tersimpan, perangkat restart...");
     vTaskDelay(pdMS_TO_TICKS(1000));
     esp_restart();
-
     return ESP_OK;
 }
-// ================== PUBLIC API (dibungkus extern C) ==================
 
 extern "C" {
 
 bool web_config_is_needed(void)
 {
     nvs_handle_t handle;
-    if (nvs_open(CONFIG_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) {
-        return true;
-    }
-    size_t len = 0;
-    esp_err_t err = nvs_get_str(handle, KEY_WIFI_SSID, NULL, &len);
+    if (nvs_open(CONFIG_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) return true;
+
+    char ssid[64] = "";
+    char api_key[128] = "";
+    char force[8] = "";
+    size_t len;
+
+    len = sizeof(ssid);
+    esp_err_t ssid_err = nvs_get_str(handle, KEY_WIFI_SSID, ssid, &len);
+    len = sizeof(api_key);
+    esp_err_t key_err = nvs_get_str(handle, KEY_API_KEY, api_key, &len);
+    len = sizeof(force);
+    esp_err_t force_err = nvs_get_str(handle, KEY_FORCE_CONFIG, force, &len);
     nvs_close(handle);
-    return err != ESP_OK || len == 0;
+
+    if (force_err == ESP_OK && strcmp(force, "1") == 0) return true;
+    return ssid_err != ESP_OK || ssid[0] == '\0' || key_err != ESP_OK || api_key[0] == '\0';
 }
 
 void web_config_start(void)
 {
     ESP_LOGI(TAG, "Memulai mode konfigurasi AP");
 
-    nvs_flash_init();
+    esp_err_t err = nvs_flash_init();
+    if (err != ESP_OK && err != ESP_ERR_NVS_NO_FREE_PAGES && err != ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_LOGE(TAG, "nvs_flash_init gagal: %s", esp_err_to_name(err));
+        return;
+    }
 
-    esp_netif_init();
-    esp_event_loop_create_default();
-    esp_netif_create_default_wifi_ap();
+    err = esp_netif_init();
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE(TAG, "esp_netif_init gagal: %s", esp_err_to_name(err));
+        return;
+    }
+
+    err = esp_event_loop_create_default();
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE(TAG, "esp_event_loop_create_default gagal: %s", esp_err_to_name(err));
+        return;
+    }
+
+    if (!esp_netif_create_default_wifi_ap()) {
+        ESP_LOGE(TAG, "Gagal membuat WiFi AP netif");
+        return;
+    }
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+    err = esp_wifi_init(&cfg);
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE(TAG, "esp_wifi_init gagal: %s", esp_err_to_name(err));
+        return;
+    }
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
 
     wifi_config_t ap_config = {};
@@ -205,9 +227,10 @@ void web_config_start(void)
     ESP_ERROR_CHECK(esp_wifi_start());
 
     httpd_config_t server_cfg = HTTPD_DEFAULT_CONFIG();
-server_cfg.server_port = 80;
-server_cfg.stack_size = 12288;   // tambahkan ini, 12 KB
-server_cfg.task_priority = 6;    // opsional, default 5 cukup
+    server_cfg.server_port = 80;
+    server_cfg.stack_size = 12288;
+    server_cfg.task_priority = 6;
+
     httpd_handle_t server = NULL;
     if (httpd_start(&server, &server_cfg) == ESP_OK) {
         httpd_uri_t root_uri = {
@@ -236,10 +259,10 @@ void web_config_save(const char *wifi_ssid,
                      const char *api_key,
                      const char *role_text)
 {
-    nvs_set_str_safe(KEY_WIFI_SSID, wifi_ssid);
-    nvs_set_str_safe(KEY_WIFI_PASS, wifi_pass);
-    nvs_set_str_safe(KEY_API_KEY, api_key);
-    nvs_set_str_safe(KEY_ROLE_TEXT, role_text);
+    nvs_set_str_safe(KEY_WIFI_SSID, wifi_ssid ? wifi_ssid : "");
+    nvs_set_str_safe(KEY_WIFI_PASS, wifi_pass ? wifi_pass : "");
+    nvs_set_str_safe(KEY_API_KEY, api_key ? api_key : "");
+    nvs_set_str_safe(KEY_ROLE_TEXT, role_text ? role_text : "");
     nvs_set_str_safe(KEY_FORCE_CONFIG, "0");
 }
 
@@ -251,12 +274,8 @@ bool web_config_load_role(char *buf, size_t max_len)
 bool web_config_load_wifi(char *ssid, size_t ssid_len,
                           char *pass, size_t pass_len)
 {
-    if (ssid == NULL || pass == NULL || ssid_len == 0 || pass_len == 0)
-        return false;
-
-    if (!nvs_get_str_safe(KEY_WIFI_SSID, ssid, ssid_len))
-        return false;
-
+    if (!ssid || !pass || ssid_len == 0 || pass_len == 0) return false;
+    if (!nvs_get_str_safe(KEY_WIFI_SSID, ssid, ssid_len)) return false;
     nvs_get_str_safe(KEY_WIFI_PASS, pass, pass_len);
     return true;
 }
