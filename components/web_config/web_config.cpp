@@ -6,6 +6,7 @@
 #include "nvs.h"
 #include "esp_netif.h"
 #include "esp_event.h"
+#include "driver/gpio.h"
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -18,6 +19,9 @@ static const char *TAG = "WEB_CONFIG";
 #define KEY_API_KEY      "api_key"
 #define KEY_ROLE_TEXT    "role_text"
 #define KEY_FORCE_CONFIG "force_config"
+
+#define CONFIG_BOOT_BUTTON_GPIO GPIO_NUM_0
+#define CONFIG_LONG_PRESS_MS 2000
 
 static const char *HTML_FORM = R"rawliteral(
 <!DOCTYPE html>
@@ -95,6 +99,38 @@ static void nvs_set_str_safe(const char *key, const char *value)
     }
 }
 
+static bool boot_button_long_pressed(void)
+{
+    gpio_config_t io = {};
+    io.pin_bit_mask = 1ULL << CONFIG_BOOT_BUTTON_GPIO;
+    io.mode = GPIO_MODE_INPUT;
+    io.pull_up_en = GPIO_PULLUP_ENABLE;
+    io.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    io.intr_type = GPIO_INTR_DISABLE;
+    gpio_config(&io);
+
+    if (gpio_get_level(CONFIG_BOOT_BUTTON_GPIO) != 0) {
+        return false;
+    }
+
+    ESP_LOGI(TAG, "GPIO0 ditekan saat boot, cek long-press %d ms...", CONFIG_LONG_PRESS_MS);
+    const int step_ms = 50;
+    int held_ms = 0;
+
+    while (gpio_get_level(CONFIG_BOOT_BUTTON_GPIO) == 0 && held_ms < CONFIG_LONG_PRESS_MS) {
+        vTaskDelay(pdMS_TO_TICKS(step_ms));
+        held_ms += step_ms;
+    }
+
+    if (held_ms >= CONFIG_LONG_PRESS_MS && gpio_get_level(CONFIG_BOOT_BUTTON_GPIO) == 0) {
+        ESP_LOGW(TAG, "GPIO0 long-press terdeteksi -> masuk Config Mode");
+        return true;
+    }
+
+    ESP_LOGI(TAG, "GPIO0 dilepas sebelum long-press -> lanjut boot normal");
+    return false;
+}
+
 static esp_err_t root_get_handler(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "text/html");
@@ -161,6 +197,10 @@ extern "C" {
 
 bool web_config_is_needed(void)
 {
+    if (boot_button_long_pressed()) {
+        return true;
+    }
+
     nvs_handle_t handle;
     if (nvs_open(CONFIG_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) return true;
 
