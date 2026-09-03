@@ -10,6 +10,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include "esp_attr.h"
 
 static const char *TAG = "WEB_CONFIG";
 
@@ -140,7 +141,7 @@ static esp_err_t root_get_handler(httpd_req_t *req)
 
 static esp_err_t save_post_handler(httpd_req_t *req)
 {
-    char content[2048];
+    static EXT_RAM_BSS_ATTR char content[2048];
     int total = 0;
     while (total < (int)sizeof(content) - 1) {
         int received = httpd_req_recv(req, content + total, sizeof(content) - 1 - total);
