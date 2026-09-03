@@ -3,6 +3,7 @@
 #include "display.h"
 #include "audio_hal.h"
 #include "uart_control.h"
+#include "web_config.h"
 
 #include "esp_log.h"
 #include "esp_system.h"
@@ -178,7 +179,8 @@ bool build_gemini_setup(char **output, size_t *output_len)
     cJSON *system_instruction = cJSON_AddObjectToObject(setup, "systemInstruction");
     cJSON *system_parts = cJSON_AddArrayToObject(system_instruction, "parts");
     cJSON *system_text = cJSON_CreateObject();
-    cJSON_AddStringToObject(system_text, "text",
+
+    const char *base_system_prompt =
             "Kamu adalah asisten suara berbahasa Indonesia. "
     "Jika pengguna meminta mengontrol perangkat, gunakan fungsi control_device dengan command yang tepat. "
     "Jika pengguna meminta kamu menampilkan ekspresi wajah, gunakan control_device dengan command Face yang sesuai. "
@@ -194,7 +196,25 @@ bool build_gemini_setup(char **output, size_t *output_len)
     "Jangan mengarang command. "
     "Tunggu hasil fungsi sebelum menyatakan aksi berhasil. "
     "Setelah hasil fungsi berhasil, jawab pengguna secara natural, singkat, dan ramah dalam bahasa Indonesia. "
-    "Jangan pernah mengucapkan nama command UART kepada pengguna.");
+    "Jangan pernah mengucapkan nama command UART kepada pengguna.";
+
+    char role_text[512] = "";
+    if (web_config_load_role(role_text, sizeof(role_text)) && role_text[0] != '\0') {
+        size_t base_len = strlen(base_system_prompt);
+        size_t role_len = strlen(role_text);
+        size_t combined_len = base_len + 2 + role_len + 1;
+        char *combined_prompt = (char *)malloc(combined_len);
+        if (combined_prompt) {
+            snprintf(combined_prompt, combined_len, "%s\n\n%s", base_system_prompt, role_text);
+            cJSON_AddStringToObject(system_text, "text", combined_prompt);
+            free(combined_prompt);
+        } else {
+            cJSON_AddStringToObject(system_text, "text", base_system_prompt);
+        }
+    } else {
+        cJSON_AddStringToObject(system_text, "text", base_system_prompt);
+    }
+
     cJSON_AddItemToArray(system_parts, system_text);
     add_device_control_tool(setup);
 
