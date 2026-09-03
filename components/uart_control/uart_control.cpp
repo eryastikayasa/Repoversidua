@@ -36,6 +36,14 @@ void uart_control_send(const char *cmd)
     uart_write_bytes(UART_CONTROL_NUM, "\n", 1); // terminator newline
 }
 
+bool uart_control_execute_command(const char *cmd)
+{
+    if (cmd == NULL || cmd[0] == '\0') return false;
+    uart_control_send(cmd);
+    ESP_LOGI(TAG, "Tool command dikirim: %s", cmd);
+    return true;
+}
+
 int uart_control_read(char *buf, size_t max_len)
 {
     if (buf == NULL || max_len == 0) return -1;
