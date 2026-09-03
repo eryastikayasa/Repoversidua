@@ -2,6 +2,8 @@
 #include "driver/uart.h"
 #include "hal/gpio_types.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include <string.h>
 
 static const char *TAG = "UART_CTRL";
@@ -12,9 +14,39 @@ static const char *TAG = "UART_CTRL";
 #define UART_CONTROL_BAUDRATE 115200
 #define UART_CONTROL_BUF_SIZE 1024
 
+static TaskHandle_t uart_rx_task_handle = NULL;
+
+static void uart_rx_task(void *arg)
+{
+    (void)arg;
+    char buf[128];
+
+    while (1) {
+        int len = uart_control_read(buf, sizeof(buf));
+        if (len > 0) {
+            bool printable = true;
+            for (int i = 0; i < len; ++i) {
+                unsigned char c = (unsigned char)buf[i];
+                if (c < 0x20 && c != '\n' && c != '\r') {
+                    printable = false;
+                    break;
+                }
+                if (c > 0x7E) {
+                    printable = false;
+                    break;
+                }
+            }
+            if (printable) {
+                ESP_LOGI(TAG, "RX UART: %s", buf);
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
+
 void uart_control_init(void)
 {
-    uart_config_t uart_cfg = {}; // zero-initialize semua field
+    uart_config_t uart_cfg = {};
     uart_cfg.baud_rate = UART_CONTROL_BAUDRATE;
     uart_cfg.data_bits = UART_DATA_8_BITS;
     uart_cfg.parity = UART_PARITY_DISABLE;
@@ -26,6 +58,16 @@ void uart_control_init(void)
     ESP_ERROR_CHECK(uart_param_config(UART_CONTROL_NUM, &uart_cfg));
     ESP_ERROR_CHECK(uart_set_pin(UART_CONTROL_NUM, UART_CONTROL_TX_PIN, UART_CONTROL_RX_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
     ESP_LOGI(TAG, "UART control siap: TX=%d RX=%d baud=%d", UART_CONTROL_TX_PIN, UART_CONTROL_RX_PIN, UART_CONTROL_BAUDRATE);
+
+    if (uart_rx_task_handle == NULL) {
+        BaseType_t result = xTaskCreate(uart_rx_task, "uart_rx_task", 4096, NULL, 1, &uart_rx_task_handle);
+        if (result != pdPASS) {
+            uart_rx_task_handle = NULL;
+            ESP_LOGE(TAG, "Gagal membuat uart_rx_task!");
+        } else {
+            ESP_LOGI(TAG, "uart_rx_task berhasil dimulai.");
+        }
+    }
 }
 
 void uart_control_send(const char *cmd)
@@ -33,7 +75,7 @@ void uart_control_send(const char *cmd)
     if (cmd == NULL) return;
     size_t len = strlen(cmd);
     uart_write_bytes(UART_CONTROL_NUM, cmd, len);
-    uart_write_bytes(UART_CONTROL_NUM, "\n", 1); // terminator newline
+    uart_write_bytes(UART_CONTROL_NUM, "\n", 1);
 }
 
 bool uart_control_execute_command(const char *cmd)
