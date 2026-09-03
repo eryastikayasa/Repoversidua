@@ -1,14 +1,17 @@
 idf_component_register(
     SRCS
-        "websocket_audio.cpp"
-        "websocket_events.cpp"
-        "websocket_json.cpp"
         "websocket_mgr.cpp"
+        "websocket_events.cpp"
         "websocket_rx.cpp"
-        "websocket_stack_wrap.c"
+        "websocket_json.cpp"
+        "websocket_audio.cpp"
         "websocket_tx.cpp"
+        "websocket_tool.cpp"
+        "websocket_stack_wrap.c"
+
     INCLUDE_DIRS
         "include"
+
     REQUIRES
         esp_websocket_client
         esp-tls
@@ -19,9 +22,6 @@ idf_component_register(
         audio_hal
         wifi_manager
         uart_control
-        esp_driver_uart
-        esp_driver_gpio
-        freertos
         web_config
 )
 
