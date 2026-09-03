@@ -8,6 +8,7 @@
 #include "freertos/semphr.h"
 #include <string.h>
 #include <math.h>
+#include "esp_attr.h"
 
 static const char *TAG = "DISPLAY";
 static i2c_master_bus_handle_t i2c_bus = NULL;
@@ -16,7 +17,7 @@ static esp_lcd_panel_handle_t panel = NULL;
 static SemaphoreHandle_t oled_mutex = NULL;
 static bool oled_ready = false;
 static face_state_t current_face_state = FACE_IDLE;
-static uint8_t face_buffer[OLED_WIDTH * OLED_HEIGHT / 8];
+static EXT_RAM_BSS_ATTR uint8_t face_buffer[OLED_WIDTH * OLED_HEIGHT / 8];
 
 static void draw_buffer_locked(const uint8_t *buffer)
 {
@@ -60,7 +61,7 @@ void oled_init(void)
 
     err = esp_lcd_new_panel_io_i2c(i2c_bus, &io_config, &panel_io);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Gagal membuat panel I2C OLED: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "Gagal membuat panel I2C: %s", esp_err_to_name(err));
         return;
     }
 
@@ -176,7 +177,6 @@ static void draw_open_eye(int cx, int cy, int gaze_x, int gaze_y)
     fill_circle(cx, cy, eye_r, true);
     fill_circle(px, py, pupil_r, false);
 
-    // Small highlight gives the pupil a more lively, less mechanical look.
     fill_circle(px - 2, py - 3, 3, true);
 }
 
