@@ -4,7 +4,7 @@ on:
   push:
     branches:
       - main
-      - fix/geminiproject
+      
   pull_request:
     branches:
       - main
