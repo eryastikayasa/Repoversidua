@@ -8,6 +8,8 @@
 
 static const char *TAG = "WS_EVENT";
 static volatile bool lifecycle_invalidated = false;
+static volatile bool websocket_cleanup_pending = false;
+static volatile bool websocket_finish_received = false;
 
 static void invalidate_connection_generation(void)
 {
@@ -35,10 +37,11 @@ void websocket_event_handler(void *handler_args, esp_event_base_t base,
         case WEBSOCKET_EVENT_CONNECTED:
             ESP_LOGI(TAG, "WebSocket TERHUBUNG ke Gemini!");
             lifecycle_invalidated = false;
+            websocket_cleanup_pending = false;
+            websocket_finish_received = false;
             is_connected = true;
             setup_complete = false;
             websocket_tx_error = false;
-            ws_need_destroy = false;
             websocket_connection_generation = websocket_connection_generation + 1;
             ESP_LOGI(TAG, "Connection generation=%lu",
                      (unsigned long)websocket_connection_generation);
@@ -84,12 +87,16 @@ void websocket_event_handler(void *handler_args, esp_event_base_t base,
             is_connected = false;
             setup_complete = false;
             websocket_tx_error = true;
+            face_set_state(FACE_ERROR);
+            display_status("AI Error!");
             invalidate_connection_generation();
             websocket_tx_flush_queue();
             websocket_rx_flush_queue();
             websocket_rx_request_reset();
             request_audio_buffer_clear();
-            face_set_state(FACE_ERROR);
+            /* Only mark cleanup pending. The websocket callback must never
+             * close, abort, or destroy its own client. */
+            websocket_cleanup_pending = true;
             break;
 
         case WEBSOCKET_EVENT_DISCONNECTED:
@@ -103,9 +110,9 @@ void websocket_event_handler(void *handler_args, esp_event_base_t base,
             websocket_rx_request_reset();
             request_audio_buffer_clear();
             display_status("AI Disconnected");
-            face_set_state(FACE_SAD);
             if (session_resumable && session_handle[0] != '\0')
                 ESP_LOGI(TAG, "Session resumption handle dipertahankan");
+            websocket_cleanup_pending = true;
             break;
 
         case WEBSOCKET_EVENT_CLOSED:
@@ -118,18 +125,30 @@ void websocket_event_handler(void *handler_args, esp_event_base_t base,
             websocket_rx_flush_queue();
             websocket_rx_request_reset();
             request_audio_buffer_clear();
-            face_set_state(FACE_SAD);
+            websocket_cleanup_pending = true;
             break;
 
         case WEBSOCKET_EVENT_FINISH:
             ESP_LOGI(TAG, "WebSocket FINISH");
-            // Jangan destroy client di event handler. Cleanup dilakukan
-            // oleh websocket TX worker setelah callback selesai.
-            ws_need_destroy = true;
+            /* FINISH is the hand-off point: the websocket task has finished
+             * its lifecycle. A separate manager task may now destroy client. */
+            websocket_finish_received = true;
+            websocket_cleanup_pending = true;
             websocket_reset_started();
             break;
 
         default:
             break;
     }
+}
+
+bool websocket_cleanup_is_pending(void)
+{
+    return websocket_cleanup_pending && websocket_finish_received;
+}
+
+void websocket_cleanup_complete(void)
+{
+    websocket_cleanup_pending = false;
+    websocket_finish_received = false;
 }
