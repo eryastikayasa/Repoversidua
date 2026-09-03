@@ -1,0 +1,58 @@
+name: Sync main from Repoversisatu
+
+on:
+  push:
+    branches: [webconfig-from-satu]
+    paths:
+      - 'main/main.cpp'
+      - '.github/workflows/sync-main-from-satu.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout target
+        uses: actions/checkout@v4
+        with:
+          ref: webconfig-from-satu
+          fetch-depth: 0
+
+      - name: Restore main from Repoversisatu and add only WebConfig
+        shell: bash
+        run: |
+          set -e
+          git clone --depth 1 https://github.com/eryastikayasa/Repoversisatu.git /tmp/Repoversisatu
+          cp /tmp/Repoversisatu/main/main.cpp main/main.cpp
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('main/main.cpp')
+          s = p.read_text()
+          s = s.replace(
+              '#include "uart_control.h"\n',
+              '#include "uart_control.h"\n#include "web_config.h"\n',
+              1,
+          )
+          marker = '    ESP_ERROR_CHECK(ret);\n'
+          addition = '''    ESP_ERROR_CHECK(ret);\n\n    // WebConfig remains an isolated boot-time configuration layer.\n    if (web_config_is_needed()) {\n        display_status("Config Mode");\n        web_config_start();\n        while (1) vTaskDelay(pdMS_TO_TICKS(1000));\n    }\n'''
+          if marker not in s:
+              raise SystemExit('NVS init marker not found')
+          s = s.replace(marker, addition, 1)
+          p.write_text(s)
+          PY
+
+      - name: Commit exact sync
+        shell: bash
+        run: |
+          set -e
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add main/main.cpp
+          if git diff --cached --quiet; then
+            echo 'main.cpp already synchronized'
+            exit 0
+          fi
+          git commit -m 'Restore main exactly from Repoversisatu with WebConfig only'
+          git push origin HEAD:webconfig-from-satu
