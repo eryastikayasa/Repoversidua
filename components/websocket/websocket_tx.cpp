@@ -1,17 +1,9 @@
 #include "websocket_internal.h"
 #include "web_config.h"
 #include "esp_log.h"
-#include "esp_websocket_client.h"
-#include "esp_crt_bundle.h"
-#include "mbedtls/base64.h"
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 
 static const char *TAG = "WS_TX";
 
-/* Repoversisatu WebSocket TX logic is preserved.
- * Only the API-key source is adapted for WebConfig/NVS. */
 const char *websocket_get_server_url(void)
 {
     static char url[256];
