@@ -17,7 +17,7 @@ static const char *TAG = "WS_JSON";
 
 /* v7.0.25: fixed PCM decode workspace. */
 #define PCM_DECODE_WORKSPACE_SIZE (24 * 1024)
-static uint8_t pcm_decode_buffer[PCM_DECODE_WORKSPACE_SIZE];
+EXT_RAM_BSS_ATTR static uint8_t pcm_decode_buffer[PCM_DECODE_WORKSPACE_SIZE];
 
 /* v7.0.28:
  * Large Gemini audio JSON contains a base64 string that can be 10-20 KB.
