@@ -2,13 +2,12 @@
 
 #include "display.h"
 #include "audio_hal.h"
-#include "web_config.h"          // <-- untuk memuat role text dari NVS
+#include "uart_control.h"
 
 #include "esp_log.h"
 #include "esp_system.h"
 #include "mbedtls/base64.h"
 #include "cJSON.h"
-#include "uart_control.h"
 
 #include <string.h>
 #include <stdlib.h>
@@ -53,11 +52,7 @@ static bool compact_large_audio_payload(char *json, size_t *io_len)
     char *b64 = (char *)p;
     char *q = b64;
     while (q < end) {
-        if (*q == '\\') {
-            /* Base64 itself never needs JSON escaping. Treat an escape here
-             * as an unsupported payload rather than risking compaction. */
-            return false;
-        }
+        if (*q == '\\') return false;
         if (*q == '\"') break;
         ++q;
     }
@@ -69,37 +64,23 @@ static bool compact_large_audio_payload(char *json, size_t *io_len)
     size_t pcm_len = 0;
     int ret = mbedtls_base64_decode(NULL, 0, &pcm_len,
                                     (const unsigned char *)b64, b64_len);
-    if (ret != 0 && ret != MBEDTLS_ERR_BASE64_BUFFER_TOO_SMALL) {
-        ESP_LOGE(TAG, "Base64 size error (fast path): -0x%04X", -ret);
-        return false;
-    }
+    if (ret != 0 && ret != MBEDTLS_ERR_BASE64_BUFFER_TOO_SMALL) return false;
     if (pcm_len == 0) return false;
 
     if (pcm_len > PCM_DECODE_WORKSPACE_SIZE) {
-        ESP_LOGW(TAG,
-                 "PCM audio melebihi fixed workspace: need=%u capacity=%u - audio dilewati",
+        ESP_LOGW(TAG, "PCM audio melebihi fixed workspace: need=%u capacity=%u - audio dilewati",
                  (unsigned)pcm_len, (unsigned)PCM_DECODE_WORKSPACE_SIZE);
     } else {
         size_t decoded = pcm_len;
-        ret = mbedtls_base64_decode(
-            pcm_decode_buffer, sizeof(pcm_decode_buffer), &decoded,
-            (const unsigned char *)b64, b64_len);
-        if (ret != 0 || decoded == 0) {
-            ESP_LOGE(TAG, "Decode audio fast path gagal: -0x%04X", -ret);
-            return false;
-        }
-
+        ret = mbedtls_base64_decode(pcm_decode_buffer, sizeof(pcm_decode_buffer), &decoded,
+                                    (const unsigned char *)b64, b64_len);
+        if (ret != 0 || decoded == 0) return false;
         audio_chunks_received++;
         audio_bytes_received += decoded;
         ESP_LOGI(TAG, "AUDIO GEMINI: %u byte -> AUDIO BUFFER (PCM cap=%u, compact JSON)",
                  (unsigned)decoded, (unsigned)PCM_DECODE_WORKSPACE_SIZE);
-
-        if (!queue_audio_pcm(pcm_decode_buffer, decoded)) {
+        if (!queue_audio_pcm(pcm_decode_buffer, decoded))
             ESP_LOGE(TAG, "Gagal memasukkan audio ke ring buffer");
-            face_set_state(FACE_ERROR);
-        } else {
-            face_set_state(FACE_SPEAKING);
-        }
     }
 
     const size_t remove_len = b64_len;
@@ -117,17 +98,62 @@ void clear_session_handle(void)
 bool store_session_handle(const char *handle)
 {
     if (!handle || handle[0] == '\0') return false;
-
     size_t len = strlen(handle);
     if (len >= sizeof(session_handle)) {
         ESP_LOGE(TAG, "Session handle terlalu panjang: %u", (unsigned)len);
         return false;
     }
-
     memcpy(session_handle, handle, len + 1);
     session_resumable = true;
     ESP_LOGI(TAG, "Session resumption handle tersimpan: %u byte", (unsigned)len);
     return true;
+}
+
+static void add_device_control_tool(cJSON *setup)
+{
+    if (!setup) return;
+
+    cJSON *tools = cJSON_AddArrayToObject(setup, "tools");
+    if (!tools) return;
+
+    cJSON *tool = cJSON_CreateObject();
+    cJSON *functions = cJSON_AddArrayToObject(tool, "functionDeclarations");
+    cJSON *decl = cJSON_CreateObject();
+    cJSON_AddStringToObject(decl, "name", "control_device");
+    cJSON_AddStringToObject(decl, "description",
+        "Mengontrol perangkat rumah melalui UART. Gunakan hanya jika pengguna meminta aksi perangkat. Setelah aksi berhasil, jawab pengguna secara natural dalam bahasa Indonesia dan jangan menyebut nama command UART.");
+
+    cJSON *parameters = cJSON_AddObjectToObject(decl, "parameters");
+    cJSON_AddStringToObject(parameters, "type", "OBJECT");
+    cJSON *properties = cJSON_AddObjectToObject(parameters, "properties");
+    cJSON *command = cJSON_AddObjectToObject(properties, "command");
+    cJSON_AddStringToObject(command, "type", "STRING");
+    cJSON_AddStringToObject(command, "description", "Command perangkat yang harus dijalankan.");
+
+    cJSON *enum_values = cJSON_AddArrayToObject(command, "enum");
+    static const char *const commands[] = {
+        "r1_on", "r1_off", "r2_on", "r2_off", "r3_on", "r3_off", "r4_on", "r4_off",
+        "fan_on", "fan_off", "fan_pwr", "fan_speed", "fan_swing", "fan_mode",
+        "mp3_mode", "mp3_play", "mp3_eq",
+        "m_led", "m_mute", "m_musik", "m_cek",
+        "cek_suhu", "cek_cahaya", 
+          // Gemini Face commands
+        "face_idle",
+        "face_listening",
+        "face_thinking",
+        "face_speaking",
+        "face_happy",
+        "face_sad",
+        "face_error",
+        "face_sleep"
+    };
+    for (size_t i = 0; i < sizeof(commands) / sizeof(commands[0]); ++i)
+        cJSON_AddItemToArray(enum_values, cJSON_CreateString(commands[i]));
+
+    cJSON *required = cJSON_AddArrayToObject(parameters, "required");
+    cJSON_AddItemToArray(required, cJSON_CreateString("command"));
+    cJSON_AddItemToArray(functions, decl);
+    cJSON_AddItemToArray(tools, tool);
 }
 
 bool build_gemini_setup(char **output, size_t *output_len)
@@ -135,15 +161,12 @@ bool build_gemini_setup(char **output, size_t *output_len)
     if (!output || !output_len) return false;
     *output = NULL;
     *output_len = 0;
-
     cJSON *root = cJSON_CreateObject();
     if (!root) return false;
-
     cJSON *setup = cJSON_AddObjectToObject(root, "setup");
     cJSON *generation_config = cJSON_AddObjectToObject(setup, "generationConfig");
     cJSON *modalities = cJSON_AddArrayToObject(generation_config, "responseModalities");
     cJSON_AddItemToArray(modalities, cJSON_CreateString("AUDIO"));
-
     cJSON *speech_config = cJSON_AddObjectToObject(generation_config, "speechConfig");
     cJSON_AddStringToObject(speech_config, "languageCode", "id-ID");
     cJSON *voice_config = cJSON_AddObjectToObject(speech_config, "voiceConfig");
@@ -152,86 +175,61 @@ bool build_gemini_setup(char **output, size_t *output_len)
     cJSON_AddStringToObject(setup, "model", "models/gemini-3.1-flash-live-preview");
     cJSON_AddObjectToObject(setup, "inputAudioTranscription");
 
-    // === Muat role text dari NVS ===
-    char personal_role[512] = "";
-    if (!web_config_load_role(personal_role, sizeof(personal_role))) {
-        // Jika kosong, gunakan default
-        strcpy(personal_role, "");
-    }
-
-    // Bangun instruksi sistem lengkap
-    char full_instruction[1024];
-    if (personal_role[0] != '\0') {
-        snprintf(full_instruction, sizeof(full_instruction),
-                 "Anda adalah asisten pintar bernama ESP. "
-                 "Jawablah dengan singkat, sopan, dan ramah. "
-                 "Jika pengguna memberikan perintah seperti 'nyalakan lampu', "
-                 "'matikan kipas', 'kecilkan volume', atau 'besarkan volume', "
-                 "konfirmasikan tindakan tersebut dengan kalimat yang jelas, "
-                 "misalnya: 'Baik, lampu dinyalakan', "
-                 "'Volume diturunkan', 'Kipas dimatikan'. "
-                 "Jangan menjelaskan teknis, cukup konfirmasi singkat. %s",
-                 personal_role);
-    } else {
-        snprintf(full_instruction, sizeof(full_instruction),
-                 "Anda adalah asisten pintar bernama ESP. "
-                 "Jawablah dengan singkat, sopan, dan ramah. "
-                 "Jika pengguna memberikan perintah seperti 'nyalakan lampu', "
-                 "'matikan kipas', 'kecilkan volume', atau 'besarkan volume', "
-                 "konfirmasikan tindakan tersebut dengan kalimat yang jelas, "
-                 "misalnya: 'Baik, lampu dinyalakan', "
-                 "'Volume diturunkan', 'Kipas dimatikan'. "
-                 "Jangan menjelaskan teknis, cukup konfirmasi singkat.");
-    }
-
-    // Format systemInstruction yang benar
     cJSON *system_instruction = cJSON_AddObjectToObject(setup, "systemInstruction");
-    cJSON *instruction_parts = cJSON_AddArrayToObject(system_instruction, "parts");
-    cJSON *instruction_part = cJSON_CreateObject();
-    cJSON_AddStringToObject(instruction_part, "text", full_instruction);
-    cJSON_AddItemToArray(instruction_parts, instruction_part);
+    cJSON *system_parts = cJSON_AddArrayToObject(system_instruction, "parts");
+    cJSON *system_text = cJSON_CreateObject();
+    cJSON_AddStringToObject(system_text, "text",
+            "Kamu adalah asisten suara berbahasa Indonesia. "
+    "Jika pengguna meminta mengontrol perangkat, gunakan fungsi control_device dengan command yang tepat. "
+    "Jika pengguna meminta kamu menampilkan ekspresi wajah, gunakan control_device dengan command Face yang sesuai. "
+    "Gunakan face_happy untuk senyum atau bahagia, "
+    "face_sad untuk sedih atau menangis, "
+    "face_thinking untuk berpikir, "
+    "face_listening untuk mendengarkan, "
+    "face_speaking untuk berbicara, "
+    "face_error untuk kesalahan atau kaget, "
+    "face_sleep untuk tidur, "
+    "dan face_idle untuk ekspresi netral. "
+    "Setiap command Face akan tampil selama 5 detik lalu kembali ke ekspresi sebelumnya. "
+    "Jangan mengarang command. "
+    "Tunggu hasil fungsi sebelum menyatakan aksi berhasil. "
+    "Setelah hasil fungsi berhasil, jawab pengguna secara natural, singkat, dan ramah dalam bahasa Indonesia. "
+    "Jangan pernah mengucapkan nama command UART kepada pengguna.");
+    cJSON_AddItemToArray(system_parts, system_text);
+    add_device_control_tool(setup);
 
     cJSON *realtime = cJSON_AddObjectToObject(setup, "realtimeInputConfig");
     cJSON *aad = cJSON_AddObjectToObject(realtime, "automaticActivityDetection");
     cJSON_AddBoolToObject(aad, "disabled", false);
-
     cJSON *resumption = cJSON_AddObjectToObject(setup, "sessionResumption");
-    if (session_resumable && session_handle[0] != '\0') {
+    if (session_resumable && session_handle[0] != '\0')
         cJSON_AddStringToObject(resumption, "handle", session_handle);
-    }
-
     char *json = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
     if (!json) {
         ESP_LOGE(TAG, "Gagal serialize Gemini setup JSON");
         return false;
     }
-
     *output = json;
     *output_len = strlen(json);
-    ESP_LOGI(TAG, "Gemini setup V7.0.9: AUDIO + id-ID + AAD ENABLED + ROLE");
+    ESP_LOGI(TAG, "Gemini setup V7.0.9: AUDIO + id-ID + AAD ENABLED + UART TOOL");
     return true;
 }
 
 static cJSON *parse_json_with_diagnostics(const char *json, size_t len)
 {
     if (!json || len == 0) return NULL;
-
     const char *parse_end = NULL;
     cJSON *root = cJSON_ParseWithLengthOpts(json, len, &parse_end, 0);
     if (root != NULL) return root;
-
     const char *error_ptr = cJSON_GetErrorPtr();
     size_t error_offset = 0;
-    if (error_ptr && error_ptr >= json && error_ptr < json + len) {
+    if (error_ptr && error_ptr >= json && error_ptr < json + len)
         error_offset = (size_t)(error_ptr - json);
-    } else if (parse_end && parse_end >= json && parse_end <= json + len) {
+    else if (parse_end && parse_end >= json && parse_end <= json + len)
         error_offset = (size_t)(parse_end - json);
-    }
-
     ESP_LOGW(TAG, "Payload bukan JSON valid: %u byte, error_offset=%u",
              (unsigned)len, (unsigned)error_offset);
-
     if (error_offset < len) {
         size_t start = error_offset > 24 ? error_offset - 24 : 0;
         size_t remaining = len - start;
@@ -242,59 +240,99 @@ static cJSON *parse_json_with_diagnostics(const char *json, size_t len)
             preview[i] = (c >= 32 && c <= 126) ? (char)c : '.';
         }
         preview[preview_len] = '\0';
-        ESP_LOGW(TAG, "JSON sekitar error @%u: \"%s\"",
-                 (unsigned)error_offset, preview);
+        ESP_LOGW(TAG, "JSON sekitar error @%u: \"%s\"", (unsigned)error_offset, preview);
     }
-
-    ESP_LOGW(TAG, "JSON RX diagnostic: heap=%u",
-             (unsigned)esp_get_free_heap_size());
+    ESP_LOGW(TAG, "JSON RX diagnostic: heap=%u", (unsigned)esp_get_free_heap_size());
     return NULL;
 }
 
-/* Fungsi untuk mendeteksi kata "esp" sebagai kata utuh (case-insensitive) */
-static bool is_esp_called(const char *text)
+static void process_gemini_tool_call(cJSON *tool_call)
 {
-    if (!text) return false;
+    if (!cJSON_IsObject(tool_call)) return;
 
-    char lower[512];
-    size_t len = strlen(text);
-    if (len >= sizeof(lower)) len = sizeof(lower) - 1;
-    for (size_t i = 0; i < len; i++) {
-        char c = text[i];
-        if (c >= 'A' && c <= 'Z') c += 32;
-        lower[i] = c;
-    }
-    lower[len] = '\0';
+    cJSON *function_calls = cJSON_GetObjectItem(tool_call, "functionCalls");
+    if (!cJSON_IsArray(function_calls)) return;
 
-    const char *p = lower;
-    while ((p = strstr(p, "esp")) != NULL) {
-        bool before_ok = (p == lower) || (*(p-1) == ' ' || *(p-1) == '\t' || *(p-1) == '\n' || *(p-1) == '\r');
-        bool after_ok = (*(p+3) == '\0' || *(p+3) == ' ' || *(p+3) == '\t' || *(p+3) == '\n' || *(p+3) == '\r');
-        if (before_ok && after_ok) return true;
-        p += 3;
+    cJSON *fc = NULL;
+    cJSON_ArrayForEach(fc, function_calls) {
+        if (!cJSON_IsObject(fc)) continue;
+
+        cJSON *id = cJSON_GetObjectItem(fc, "id");
+        cJSON *name = cJSON_GetObjectItem(fc, "name");
+        cJSON *args = cJSON_GetObjectItem(fc, "args");
+        if (!cJSON_IsString(id) || !id->valuestring ||
+            !cJSON_IsString(name) || !name->valuestring ||
+            !cJSON_IsObject(args)) {
+            ESP_LOGW(TAG, "Tool call Gemini tidak lengkap");
+            continue;
+        }
+
+        ESP_LOGI(TAG, "Gemini TOOL CALL: %s id=%s", name->valuestring, id->valuestring);
+
+        bool success = false;
+        if (strcmp(name->valuestring, "control_device") == 0) {
+    cJSON *command = cJSON_GetObjectItem(args, "command");
+
+    if (cJSON_IsString(command) && command->valuestring) {
+        const char *cmd = command->valuestring;
+
+        if (strcmp(cmd, "face_idle") == 0) {
+            face_show_for_ms(FACE_IDLE, 5000);
+            success = true;
+        }
+        else if (strcmp(cmd, "face_listening") == 0) {
+            face_show_for_ms(FACE_LISTENING, 5000);
+            success = true;
+        }
+        else if (strcmp(cmd, "face_thinking") == 0) {
+            face_show_for_ms(FACE_THINKING, 5000);
+            success = true;
+        }
+        else if (strcmp(cmd, "face_speaking") == 0) {
+            face_show_for_ms(FACE_SPEAKING, 5000);
+            success = true;
+        }
+        else if (strcmp(cmd, "face_happy") == 0) {
+            face_show_for_ms(FACE_HAPPY, 5000);
+            success = true;
+        }
+        else if (strcmp(cmd, "face_sad") == 0) {
+            face_show_for_ms(FACE_SAD, 5000);
+            success = true;
+        }
+        else if (strcmp(cmd, "face_error") == 0) {
+            face_show_for_ms(FACE_ERROR, 5000);
+            success = true;
+        }
+        else if (strcmp(cmd, "face_sleep") == 0) {
+            face_show_for_ms(FACE_SLEEP, 5000);
+            success = true;
+        }
+        else {
+            success = uart_control_execute_command(cmd);
+
+            ESP_LOGI(TAG,
+                     "UART TOOL command=%s result=%s",
+                     cmd,
+                     success ? "OK" : "REJECTED");
+        }
+    } else {
+        ESP_LOGW(TAG, "control_device tanpa argument command");
     }
-    return false;
+        }
+
+        if (!websocket_send_tool_response(id->valuestring, name->valuestring, success))
+            ESP_LOGW(TAG, "Gagal mengirim toolResponse ke Gemini");
+    }
 }
 
 void process_gemini_message(const char *json, size_t len)
 {
     if (!json || len == 0) return;
-
     size_t parse_len = len;
     (void)compact_large_audio_payload((char *)json, &parse_len);
-
     cJSON *root = parse_json_with_diagnostics(json, parse_len);
-    if (!root) {
-        size_t preview_len = parse_len < 32 ? parse_len : 32;
-        char preview[65];
-        for (size_t i = 0; i < preview_len; ++i) {
-            unsigned char c = (unsigned char)json[i];
-            preview[i] = (c >= 32 && c <= 126) ? (char)c : '.';
-        }
-        preview[preview_len] = '\0';
-        ESP_LOGW(TAG, "Payload preview: \"%s\"", preview);
-        return;
-    }
+    if (!root) return;
 
     cJSON *setup_complete_obj = cJSON_GetObjectItem(root, "setupComplete");
     if (cJSON_IsObject(setup_complete_obj)) {
@@ -305,95 +343,25 @@ void process_gemini_message(const char *json, size_t len)
         return;
     }
 
+    // Gemini Live sends function calls as a dedicated top-level toolCall.
+    // Execute locally, send the UART command, then return toolResponse so
+    // Gemini can produce the natural spoken confirmation.
+    cJSON *tool_call = cJSON_GetObjectItem(root, "toolCall");
+    if (cJSON_IsObject(tool_call))
+        process_gemini_tool_call(tool_call);
+
     cJSON *input_transcription = cJSON_GetObjectItem(root, "inputTranscription");
     if (cJSON_IsObject(input_transcription)) {
         cJSON *text = cJSON_GetObjectItem(input_transcription, "text");
-        if (cJSON_IsString(text) && text->valuestring) {
-            const char *user_text = text->valuestring;
-            ESP_LOGI(TAG, "USER: %s", user_text);
-
-            bool esp_called = is_esp_called(user_text);
-            if (esp_called) {
-                ESP_LOGI(TAG, "Kata panggil ESP terdeteksi!");
-                face_set_state(FACE_HAPPY);
-            }
-
-            if (esp_called) {
-                uint8_t current_volume = get_gemini_volume();
-
-                // ===== PERINTAH TURUNKAN VOLUME =====
-                if (strstr(user_text, "kecilkan volume") || strstr(user_text, "volume kecil") ||
-                    strstr(user_text, "lebih kecil") || strstr(user_text, "pelankan volume") ||
-                    strstr(user_text, "volume pelan") ||
-                    strstr(user_text, "turunkan volume") || strstr(user_text, "volume turun")) {
-                    current_volume = current_volume >= 10 ? current_volume - 10 : 0;
-                    set_gemini_volume(current_volume);
-                    ESP_LOGI(TAG, "Perintah volume: TURUNKAN -> %u%%", (unsigned)current_volume);
-                }
-                // ===== PERINTAH NAIKKAN VOLUME =====
-                else if (strstr(user_text, "besarkan volume") || strstr(user_text, "volume besar") ||
-                         strstr(user_text, "lebih besar") || strstr(user_text, "keraskan volume") ||
-                         strstr(user_text, "volume keras") ||
-                         strstr(user_text, "naikkan volume") || strstr(user_text, "volume naik")) {
-                    current_volume = current_volume <= 90 ? current_volume + 10 : 100;
-                    set_gemini_volume(current_volume);
-                    ESP_LOGI(TAG, "Perintah volume: NAIKKAN -> %u%%", (unsigned)current_volume);
-                }
-                // ===== PERINTAH CEK VOLUME =====
-                else if (strstr(user_text, "cek volume") || strstr(user_text, "volume berapa") ||
-                         strstr(user_text, "berapa volume")) {
-                    ESP_LOGI(TAG, "Volume saat ini: %u%%", (unsigned)current_volume);
-                    face_set_state(FACE_HAPPY);
-                }
-                // ===== KONTROL UART =====
-                else if (strstr(user_text, "nyalakan lampu") || strstr(user_text, "lampu on")) {
-                    uart_control_send("r3_on");
-                    ESP_LOGI(TAG, "UART: r3_on (lampu nyala)");
-                    face_set_state(FACE_HAPPY);
-                }
-                else if (strstr(user_text, "matikan lampu") || strstr(user_text, "lampu off")) {
-                    uart_control_send("r3_off");
-                    ESP_LOGI(TAG, "UART: r3_off (lampu mati)");
-                    face_set_state(FACE_HAPPY);
-                }
-                else if (strstr(user_text, "nyalakan colokan") || strstr(user_text, "colokan on")) {
-                    uart_control_send("r1_on");
-                    ESP_LOGI(TAG, "UART: r1_on (colokan nyala)");
-                    face_set_state(FACE_HAPPY);
-                }
-                else if (strstr(user_text, "matikan colokan") || strstr(user_text, "colokan off")) {
-                    uart_control_send("r1_off");
-                    ESP_LOGI(TAG, "UART: r1_off (colokan mati)");
-                    face_set_state(FACE_HAPPY);
-                }
-                else if (strstr(user_text, "nyalakan kipas") || strstr(user_text, "kipas on")) {
-                    uart_control_send("fan_on");
-                    ESP_LOGI(TAG, "UART: fan_on");
-                    face_set_state(FACE_HAPPY);
-                }
-                else if (strstr(user_text, "matikan kipas") || strstr(user_text, "kipas off")) {
-                    uart_control_send("fan_off");
-                    ESP_LOGI(TAG, "UART: fan_off");
-                    face_set_state(FACE_HAPPY);
-                }
-                else if (strstr(user_text, "cek suhu") || strstr(user_text, "berapa suhu")) {
-                    uart_control_send("cek_suhu");
-                    ESP_LOGI(TAG, "UART: cek_suhu");
-                }
-                else if (strstr(user_text, "cek cahaya") || strstr(user_text, "berapa cahaya")) {
-                    uart_control_send("cek_cahaya");
-                    ESP_LOGI(TAG, "UART: cek_cahaya");
-                }
-            }
-        }
+        if (cJSON_IsString(text) && text->valuestring)
+            ESP_LOGI(TAG, "USER: %s", text->valuestring);
     }
 
     cJSON *output_transcription = cJSON_GetObjectItem(root, "outputTranscription");
     if (cJSON_IsObject(output_transcription)) {
         cJSON *text = cJSON_GetObjectItem(output_transcription, "text");
-        if (cJSON_IsString(text) && text->valuestring) {
+        if (cJSON_IsString(text) && text->valuestring)
             ESP_LOGI(TAG, "GEMINI TEXT: %s", text->valuestring);
-        }
     }
 
     cJSON *server = cJSON_GetObjectItem(root, "serverContent");
@@ -431,12 +399,8 @@ void process_gemini_message(const char *json, size_t len)
                         audio_bytes_received += decoded;
                         ESP_LOGI(TAG, "AUDIO GEMINI: %u byte -> AUDIO BUFFER (PCM cap=%u)",
                                  (unsigned)decoded, (unsigned)PCM_DECODE_WORKSPACE_SIZE);
-                        if (!queue_audio_pcm(pcm_decode_buffer, decoded)) {
+                        if (!queue_audio_pcm(pcm_decode_buffer, decoded))
                             ESP_LOGE(TAG, "Gagal memasukkan audio ke ring buffer");
-                            face_set_state(FACE_ERROR);
-                        } else {
-                            face_set_state(FACE_SPEAKING);
-                        }
                     }
                 }
             }
@@ -454,7 +418,6 @@ void process_gemini_message(const char *json, size_t len)
                      (unsigned)audio_chunks_received, (unsigned long long)audio_bytes_received,
                      (unsigned long long)audio_bytes_played, (unsigned)pending,
                      (unsigned)audio_write_calls);
-            face_set_state(FACE_IDLE);
             if (pending == 0) check_audio_playback_complete();
         }
 
@@ -473,7 +436,8 @@ void process_gemini_message(const char *json, size_t len)
         cJSON *resumable = cJSON_GetObjectItem(resume, "resumable");
         bool can_resume = cJSON_IsTrue(resumable);
         if (can_resume && cJSON_IsString(handle) && handle->valuestring && handle->valuestring[0] != '\0') {
-            if (store_session_handle(handle->valuestring)) ESP_LOGI(TAG, "Session resumption: resumable=true, handle updated");
+            if (store_session_handle(handle->valuestring))
+                ESP_LOGI(TAG, "Session resumption: resumable=true, handle updated");
         } else {
             session_resumable = false;
             ESP_LOGI(TAG, "Session resumption: resumable=false");
