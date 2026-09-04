@@ -97,63 +97,156 @@ static void wakeword_deinit(void)
     sr_models = nullptr;
 }
 
-static bool debug_dns_resolution(void)
+static bool resolve_host(const char *label, const char *host, const char *port, char *resolved_ip, size_t resolved_ip_len)
 {
-    const char *host = "generativelanguage.googleapis.com";
-    ESP_LOGI(TAG, "========================================");
-    ESP_LOGI(TAG, "DEBUG NETWORK START");
-    ESP_LOGI(TAG, "DNS test: %s", host);
-    struct addrinfo hints = {}; struct addrinfo *result = nullptr;
-    hints.ai_family = AF_INET; hints.ai_socktype = SOCK_STREAM;
-    int err = getaddrinfo(host, "443", &hints, &result);
-    if (err != 0) { ESP_LOGE(TAG, "DNS FAILED: getaddrinfo error=%d errno=%d", err, errno); ESP_LOGI(TAG, "========================================"); return false; }
-    ESP_LOGI(TAG, "DNS OK");
+    ESP_LOGI(TAG, "DNS [%s]: getaddrinfo(%s:%s)", label, host, port);
+    struct addrinfo hints = {};
+    struct addrinfo *result = nullptr;
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    int saved_errno = 0;
+    int64_t start_us = esp_timer_get_time();
+    int err = getaddrinfo(host, port, &hints, &result);
+    int64_t elapsed_us = esp_timer_get_time() - start_us;
+    saved_errno = errno;
+    ESP_LOGI(TAG, "DNS [%s]: err=%d errno=%d elapsed=%lld ms", label, err, saved_errno, (long long)(elapsed_us / 1000));
+    if (err != 0 || result == nullptr) {
+        ESP_LOGE(TAG, "DNS [%s]: FAILED", label);
+        return false;
+    }
+
     bool found_ipv4 = false;
+    if (resolved_ip && resolved_ip_len > 0) resolved_ip[0] = '\0';
     for (struct addrinfo *p = result; p != nullptr; p = p->ai_next) {
-        if (p->ai_family != AF_INET) continue;
-        struct sockaddr_in *addr = (struct sockaddr_in *)p->ai_addr; char ip[INET_ADDRSTRLEN] = {};
-        if (inet_ntop(AF_INET, &addr->sin_addr, ip, sizeof(ip)) != nullptr) ESP_LOGI(TAG, "DNS IPv4: %s", ip);
-        found_ipv4 = true; break;
+        if (p->ai_family != AF_INET || !p->ai_addr) continue;
+        struct sockaddr_in *addr = (struct sockaddr_in *)p->ai_addr;
+        char ip[INET_ADDRSTRLEN] = {};
+        if (inet_ntop(AF_INET, &addr->sin_addr, ip, sizeof(ip)) != nullptr) {
+            ESP_LOGI(TAG, "DNS [%s]: IPv4=%s", label, ip);
+            if (!found_ipv4 && resolved_ip && resolved_ip_len > 0) {
+                strlcpy(resolved_ip, ip, resolved_ip_len);
+            }
+        }
+        found_ipv4 = true;
     }
     freeaddrinfo(result);
-    if (!found_ipv4) { ESP_LOGE(TAG, "DNS OK tetapi tidak mendapatkan IPv4"); ESP_LOGI(TAG, "========================================"); return false; }
-    ESP_LOGI(TAG, "DNS RESULT: OK"); ESP_LOGI(TAG, "========================================"); return true;
+    if (!found_ipv4) {
+        ESP_LOGE(TAG, "DNS [%s]: OK tetapi tidak ada IPv4", label);
+        return false;
+    }
+    ESP_LOGI(TAG, "DNS [%s]: RESULT=OK", label);
+    return true;
+}
+
+static bool debug_dns_server(const char *label, const char *dns_ip)
+{
+    if (!dns_ip || dns_ip[0] == '\0' || strcmp(dns_ip, "0.0.0.0") == 0) {
+        ESP_LOGW(TAG, "DNS SERVER [%s]: tidak dikonfigurasi", label);
+        return false;
+    }
+    ESP_LOGI(TAG, "DNS SERVER [%s]: %s", label, dns_ip);
+    return resolve_host(label, dns_ip, "53", nullptr, 0);
+}
+
+static bool debug_dns_resolution(void)
+{
+    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "DEBUG NETWORK START");
+
+    char google_ip[INET_ADDRSTRLEN] = {};
+    char gemini_ip[INET_ADDRSTRLEN] = {};
+
+    bool google_ok = resolve_host("google.com", "google.com", "443", google_ip, sizeof(google_ip));
+    bool gemini_ok = resolve_host("Gemini", "generativelanguage.googleapis.com", "443", gemini_ip, sizeof(gemini_ip));
+
+    ESP_LOGI(TAG, "DNS SUMMARY: google.com=%s Gemini=%s", google_ok ? "OK" : "FAILED", gemini_ok ? "OK" : "FAILED");
+    if (!google_ok || !gemini_ok) {
+        ESP_LOGI(TAG, "========================================");
+        return false;
+    }
+    ESP_LOGI(TAG, "DNS RESULT: OK");
+    ESP_LOGI(TAG, "Gemini resolved IP: %s", gemini_ip);
+    ESP_LOGI(TAG, "========================================");
+    return true;
 }
 
 static bool debug_tcp_connection(void)
 {
-    const char *host = "generativelanguage.googleapis.com"; const char *port = "443";
-    ESP_LOGI(TAG, "TCP test: %s:%s", host, port);
-    struct addrinfo hints = {}; struct addrinfo *result = nullptr;
-    hints.ai_family = AF_INET; hints.ai_socktype = SOCK_STREAM;
-    int err = getaddrinfo(host, port, &hints, &result);
-    if (err != 0 || result == nullptr) { ESP_LOGE(TAG, "TCP test gagal mendapatkan address: error=%d errno=%d", err, errno); return false; }
-    int sock = -1; bool connected = false;
-    for (struct addrinfo *p = result; p != nullptr; p = p->ai_next) {
-        if (p->ai_family != AF_INET) continue;
-        struct sockaddr_in *addr = (struct sockaddr_in *)p->ai_addr; char ip[INET_ADDRSTRLEN] = {};
-        if (inet_ntop(AF_INET, &addr->sin_addr, ip, sizeof(ip)) != nullptr) ESP_LOGI(TAG, "TCP target: %s:443", ip);
-        sock = socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
-        if (sock < 0) { ESP_LOGE(TAG, "TCP socket() FAILED errno=%d", errno); continue; }
-        struct timeval timeout = {}; timeout.tv_sec = 5;
-        setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)); setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-        ESP_LOGI(TAG, "TCP connect()...");
-        if (connect(sock, p->ai_addr, p->ai_addrlen) == 0) { ESP_LOGI(TAG, "TCP CONNECT OK"); connected = true; close(sock); break; }
-        ESP_LOGE(TAG, "TCP CONNECT FAILED errno=%d", errno); close(sock); sock = -1;
+    char gemini_ip[INET_ADDRSTRLEN] = {};
+    if (!resolve_host("Gemini-TCP", "generativelanguage.googleapis.com", "443", gemini_ip, sizeof(gemini_ip))) {
+        ESP_LOGE(TAG, "TCP test dihentikan: DNS Gemini gagal");
+        return false;
     }
-    freeaddrinfo(result);
-    if (connected) { ESP_LOGI(TAG, "TCP RESULT: OK"); return true; }
-    ESP_LOGE(TAG, "TCP RESULT: GAGAL"); return false;
+
+    ESP_LOGI(TAG, "TCP test: generativelanguage.googleapis.com:443 -> %s:443", gemini_ip);
+    struct sockaddr_in target = {};
+    target.sin_family = AF_INET;
+    target.sin_port = htons(443);
+    if (inet_pton(AF_INET, gemini_ip, &target.sin_addr) != 1) {
+        ESP_LOGE(TAG, "TCP target IP tidak valid: %s", gemini_ip);
+        return false;
+    }
+
+    int sock = socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
+    if (sock < 0) {
+        ESP_LOGE(TAG, "TCP socket() FAILED errno=%d", errno);
+        return false;
+    }
+    struct timeval timeout = {};
+    timeout.tv_sec = 5;
+    setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+
+    ESP_LOGI(TAG, "TCP connect() ke %s:443...", gemini_ip);
+    int64_t start_us = esp_timer_get_time();
+    int ret = connect(sock, (struct sockaddr *)&target, sizeof(target));
+    int saved_errno = errno;
+    int64_t elapsed_us = esp_timer_get_time() - start_us;
+    if (ret == 0) {
+        ESP_LOGI(TAG, "TCP CONNECT OK elapsed=%lld ms", (long long)(elapsed_us / 1000));
+        close(sock);
+        ESP_LOGI(TAG, "TCP RESULT: OK");
+        return true;
+    }
+    ESP_LOGE(TAG, "TCP CONNECT FAILED errno=%d elapsed=%lld ms", saved_errno, (long long)(elapsed_us / 1000));
+    close(sock);
+    ESP_LOGE(TAG, "TCP RESULT: GAGAL");
+    return false;
 }
 
 static void debug_network_path(void)
 {
-    ESP_LOGI(TAG, ""); ESP_LOGI(TAG, "========================================"); ESP_LOGI(TAG, "NETWORK DIAGNOSTIC");
-    ESP_LOGI(TAG, "Target: generativelanguage.googleapis.com:443"); ESP_LOGI(TAG, "========================================");
-    if (!debug_dns_resolution()) { ESP_LOGE(TAG, "NETWORK STOP: DNS"); ESP_LOGI(TAG, "========================================"); return; }
-    if (!debug_tcp_connection()) { ESP_LOGE(TAG, "NETWORK STOP: TCP"); ESP_LOGI(TAG, "DNS = OK"); ESP_LOGI(TAG, "TCP = FAILED"); ESP_LOGI(TAG, "TLS = BELUM DITES"); ESP_LOGI(TAG, "========================================"); return; }
-    ESP_LOGI(TAG, "========================================"); ESP_LOGI(TAG, "NETWORK BASIC TEST = OK");
-    ESP_LOGI(TAG, "DNS = OK"); ESP_LOGI(TAG, "TCP 443 = OK"); ESP_LOGI(TAG, "NEXT = WebSocket/TLS"); ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "NETWORK DIAGNOSTIC");
+    ESP_LOGI(TAG, "Target: generativelanguage.googleapis.com:443");
+    ESP_LOGI(TAG, "========================================");
+
+    ESP_LOGI(TAG, "STEP 1: Network interface state sudah dilog oleh WIFI_MGR saat GOT_IP");
+    ESP_LOGI(TAG, "STEP 2: DNS server reachability akan diuji melalui resolver");
+    ESP_LOGI(TAG, "STEP 3: DNS google.com");
+    ESP_LOGI(TAG, "STEP 4: DNS generativelanguage.googleapis.com");
+    ESP_LOGI(TAG, "STEP 5: TCP 443 ke IP Gemini hasil DNS");
+
+    if (!debug_dns_resolution()) {
+        ESP_LOGE(TAG, "NETWORK STOP: DNS");
+        ESP_LOGI(TAG, "========================================");
+        return;
+    }
+    if (!debug_tcp_connection()) {
+        ESP_LOGE(TAG, "NETWORK STOP: TCP");
+        ESP_LOGI(TAG, "DNS = OK");
+        ESP_LOGI(TAG, "TCP = FAILED");
+        ESP_LOGI(TAG, "TLS = BELUM DITES");
+        ESP_LOGI(TAG, "========================================");
+        return;
+    }
+    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "NETWORK BASIC TEST = OK");
+    ESP_LOGI(TAG, "DNS = OK");
+    ESP_LOGI(TAG, "TCP 443 = OK");
+    ESP_LOGI(TAG, "NEXT = WebSocket/TLS");
+    ESP_LOGI(TAG, "========================================");
 }
 
 static void sync_sntp_time(void)
