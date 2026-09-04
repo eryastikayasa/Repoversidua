@@ -39,27 +39,41 @@ def pack_models(model_path, out_file="srmodels.bin"):
     """
     Pack all models into one binary file using the ESP-SR model format.
 
-    model_path: directory containing model subdirectories
-    out_file: output binary filename/path
+    The file order is deterministic and matches the known-good ESP-SR
+    model image layout: wn9_index, _MODEL_INFO_, then wn9_data.
     """
     models = {}
     file_num = 0
-    model_num = 0
+
     for root, dirs, _ in os.walk(model_path):
-        for model_name in dirs:
+        for model_name in sorted(dirs):
             models[model_name] = {}
             model_dir = os.path.join(root, model_name)
-            model_num += 1
             for _, _, files in os.walk(model_dir):
-                for file_name in files:
+                for file_name in sorted(files):
                     file_num += 1
                     file_path = os.path.join(model_dir, file_name)
                     models[model_name][file_name] = read_data(file_path)
+
+    # Keep the single-model ESP-SR package layout identical to the
+    # known-good baseline artifact: index -> model info -> data.
+    preferred_order = {
+        "wn9_index": 0,
+        "_MODEL_INFO_": 1,
+        "wn9_data": 2,
+    }
+    for model_name in models:
+        ordered = sorted(
+            models[model_name].items(),
+            key=lambda item: (preferred_order.get(item[0], 100), item[0]),
+        )
+        models[model_name] = dict(ordered)
 
     model_num = len(models)
     header_len = 4 + model_num * (32 + 4) + file_num * (32 + 4 + 4)
     out_bin = struct.pack('I', model_num)
     data_bin = None
+
     for key in models:
         model_bin = struct_pack_string(key, 32)
         model_bin += struct.pack('I', len(models[key]))
@@ -89,6 +103,6 @@ def pack_models(model_path, out_file="srmodels.bin"):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Model package tool')
     parser.add_argument('-m', '--model_path', help="the path of model files")
-    parser.add_argument('-o', '--out_file', default="srmodels.bin", help="the path of binary file")
+    parser.add_argument('-o', '--out_file', default="srmodels.bin", help="the path of the output binary file")
     args = parser.parse_args()
     pack_models(model_path=args.model_path, out_file=args.out_file)
