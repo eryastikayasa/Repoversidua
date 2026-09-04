@@ -74,9 +74,19 @@ static void event_handler(
                 esp_netif_dns_info_t dns = {};
                 esp_err_t dns_err = esp_netif_get_dns_info(event->esp_netif, dns_types[i], &dns);
                 if (dns_err == ESP_OK) {
-                    ESP_LOGI(TAG, "DNS %s=" IPSTR, dns_names[i], IP2STR(&dns.ip.u_addr.ip4));
+                    ESP_LOGI(TAG, "DNS STA %s=" IPSTR, dns_names[i], IP2STR(&dns.ip.u_addr.ip4));
                 } else {
-                    ESP_LOGW(TAG, "DNS %s tidak tersedia: %s", dns_names[i], esp_err_to_name(dns_err));
+                    ESP_LOGW(TAG, "DNS STA %s tidak tersedia: %s", dns_names[i], esp_err_to_name(dns_err));
+                }
+
+                // Default ESP-IDF/lwIP stores DNS globally. Passing NULL asks
+                // esp_netif for the global DNS state rather than the STA handle.
+                esp_netif_dns_info_t global_dns = {};
+                esp_err_t global_dns_err = esp_netif_get_dns_info(NULL, dns_types[i], &global_dns);
+                if (global_dns_err == ESP_OK) {
+                    ESP_LOGI(TAG, "DNS GLOBAL %s=" IPSTR, dns_names[i], IP2STR(&global_dns.ip.u_addr.ip4));
+                } else {
+                    ESP_LOGW(TAG, "DNS GLOBAL %s tidak tersedia: %s", dns_names[i], esp_err_to_name(global_dns_err));
                 }
             }
         }
