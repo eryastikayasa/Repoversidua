@@ -12,7 +12,6 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
-#include "esp_attr.h"
 
 static const char *TAG = "WS_AUDIO";
 static volatile bool audio_clear_pending = false;
@@ -93,7 +92,7 @@ void check_audio_playback_complete(void)
 static void audio_playback_task(void *arg)
 {
     (void)arg;
-    static EXT_RAM_BSS_ATTR uint8_t playback_buffer[AUDIO_PLAYBACK_READ_SIZE];
+    static uint8_t playback_buffer[AUDIO_PLAYBACK_READ_SIZE];
     bool playback_started = false;
     bool underrun_reported = false;
     uint32_t playback_generation = 0;
@@ -330,6 +329,7 @@ bool queue_audio_pcm(const uint8_t *pcm, size_t len)
     uint64_t queued_before = audio_bytes_queued;
     uint64_t dropped_before = audio_bytes_dropped;
 
+    // Volume feature removed: Gemini PCM masuk ke playback tanpa modifikasi.
     (void)send_realtime_pcm(pcm, len);
 
     const uint64_t queued_delta = audio_bytes_queued - queued_before;

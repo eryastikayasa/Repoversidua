@@ -3,7 +3,6 @@
 #include "display.h"
 #include "audio_hal.h"
 #include "uart_control.h"
-#include "web_config.h"
 
 #include "esp_log.h"
 #include "esp_system.h"
@@ -18,7 +17,7 @@ static const char *TAG = "WS_JSON";
 
 /* v7.0.25: fixed PCM decode workspace. */
 #define PCM_DECODE_WORKSPACE_SIZE (24 * 1024)
-EXT_RAM_BSS_ATTR static uint8_t pcm_decode_buffer[PCM_DECODE_WORKSPACE_SIZE];
+static uint8_t pcm_decode_buffer[PCM_DECODE_WORKSPACE_SIZE];
 
 /* v7.0.28:
  * Large Gemini audio JSON contains a base64 string that can be 10-20 KB.
@@ -137,7 +136,7 @@ static void add_device_control_tool(cJSON *setup)
         "fan_on", "fan_off", "fan_pwr", "fan_speed", "fan_swing", "fan_mode",
         "mp3_mode", "mp3_play", "mp3_eq",
         "m_led", "m_mute", "m_musik", "m_cek",
-        "cek_suhu", "cek_cahaya",
+        "cek_suhu", "cek_cahaya", 
           // Gemini Face commands
         "face_idle",
         "face_listening",
@@ -179,8 +178,7 @@ bool build_gemini_setup(char **output, size_t *output_len)
     cJSON *system_instruction = cJSON_AddObjectToObject(setup, "systemInstruction");
     cJSON *system_parts = cJSON_AddArrayToObject(system_instruction, "parts");
     cJSON *system_text = cJSON_CreateObject();
-
-    const char *base_system_prompt =
+    cJSON_AddStringToObject(system_text, "text",
             "Kamu adalah asisten suara berbahasa Indonesia. "
     "Jika pengguna meminta mengontrol perangkat, gunakan fungsi control_device dengan command yang tepat. "
     "Jika pengguna meminta kamu menampilkan ekspresi wajah, gunakan control_device dengan command Face yang sesuai. "
@@ -196,26 +194,7 @@ bool build_gemini_setup(char **output, size_t *output_len)
     "Jangan mengarang command. "
     "Tunggu hasil fungsi sebelum menyatakan aksi berhasil. "
     "Setelah hasil fungsi berhasil, jawab pengguna secara natural, singkat, dan ramah dalam bahasa Indonesia. "
-    "Jangan pernah mengucapkan nama command UART kepada pengguna.";
-
-    static EXT_RAM_BSS_ATTR char role_text[512];
-    role_text[0] = '\0';
-    if (web_config_load_role(role_text, sizeof(role_text)) && role_text[0] != '\0') {
-        size_t base_len = strlen(base_system_prompt);
-        size_t role_len = strlen(role_text);
-        size_t combined_len = base_len + 2 + role_len + 1;
-        char *combined_prompt = (char *)malloc(combined_len);
-        if (combined_prompt) {
-            snprintf(combined_prompt, combined_len, "%s\n\n%s", base_system_prompt, role_text);
-            cJSON_AddStringToObject(system_text, "text", combined_prompt);
-            free(combined_prompt);
-        } else {
-            cJSON_AddStringToObject(system_text, "text", base_system_prompt);
-        }
-    } else {
-        cJSON_AddStringToObject(system_text, "text", base_system_prompt);
-    }
-
+    "Jangan pernah mengucapkan nama command UART kepada pengguna.");
     cJSON_AddItemToArray(system_parts, system_text);
     add_device_control_tool(setup);
 

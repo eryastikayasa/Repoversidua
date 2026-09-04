@@ -14,7 +14,6 @@
 #include "freertos/queue.h"
 #include <stddef.h>
 #include <stdint.h>
-#include "esp_attr.h"
 
 static const char *TAG = "WS_MGR";
 esp_websocket_client_handle_t client = NULL;
@@ -72,6 +71,9 @@ static void websocket_cleanup_task(void *arg)
     ESP_LOGI(TAG, "WebSocket lifecycle cleanup worker siap");
     for (;;) {
         if (websocket_cleanup_is_pending()) {
+            /* FINISH is delivered by the websocket task. Only after FINISH do
+             * we destroy the client, and this worker is a different FreeRTOS
+             * task, avoiding esp_websocket_client lifecycle lock recursion. */
             esp_websocket_client_handle_t ws = client;
             if (ws != NULL && !esp_websocket_client_is_connected(ws)) {
                 ESP_LOGI(TAG, "Cleanup worker: destroy client dari task manager");
@@ -115,8 +117,8 @@ static void websocket_tx_task(void *arg)
             free(setup_json); free(audio_data); continue;
         }
         if (cmd.type == WS_TX_COMMAND_AUDIO) {
-            static EXT_RAM_BSS_ATTR char b64_buf[2300];
-            static EXT_RAM_BSS_ATTR char json_buf[2500];
+            static char b64_buf[2300];
+            static char json_buf[2500];
             constexpr size_t PCM_SEND_CHUNK = 1600;
             constexpr TickType_t AUDIO_SEND_TIMEOUT = pdMS_TO_TICKS(3000);
             constexpr TickType_t AUDIO_SEND_RETRY_DELAY = pdMS_TO_TICKS(30);
@@ -263,6 +265,7 @@ bool websocket_is_connected(void)
 
 void websocket_disconnect(void)
 {
+    /* Called by audio/main task, never from websocket event callback. */
     if (client != NULL) {
         esp_websocket_client_close(client, pdMS_TO_TICKS(1000));
     }
