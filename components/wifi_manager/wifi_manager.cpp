@@ -11,6 +11,7 @@
 #include "esp_event.h"
 #include "esp_netif.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 
 #include <sys/socket.h>
 #include <arpa/inet.h>
@@ -236,8 +237,6 @@ static void event_handler(
                     ESP_LOGW(TAG, "DNS STA %s tidak tersedia: %s", dns_names[i], esp_err_to_name(dns_err));
                 }
 
-                // Keep the global check only as a diagnostic. ESP-IDF may reject
-                // NULL here depending on the active netif/DNS configuration.
                 esp_netif_dns_info_t global_dns = {};
                 esp_err_t global_dns_err = esp_netif_get_dns_info(NULL, dns_types[i], &global_dns);
                 if (global_dns_err == ESP_OK) {
@@ -330,7 +329,6 @@ void wifi_init_sta(void)
         return;
     }
 
-    // === Ambil SSID dan password dari NVS ===
     char ssid[64] = "";
     char pass[64] = "";
     if (!web_config_load_wifi(ssid, sizeof(ssid), pass, sizeof(pass))) {
