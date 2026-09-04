@@ -63,6 +63,13 @@ static bool wakeword_init(void)
         ESP_LOGE(TAG, "WakeNet handle tidak ditemukan: %s", WAKE_MODEL_NAME);
         esp_srmodel_deinit(sr_models); sr_models = nullptr; return false;
     }
+    ESP_LOGI(TAG, "WAKE HEAP BEFORE CREATE: PSRAM free=%u largest=%u INTERNAL free=%u largest=%u sr_models=%p",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+             (void *)sr_models);
+
     wake_model = wake_iface->create(WAKE_MODEL_NAME, DET_MODE_90);
     if (!wake_model) {
         ESP_LOGE(TAG, "Gagal membuat WakeNet model: %s", WAKE_MODEL_NAME);
