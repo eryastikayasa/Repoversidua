@@ -4,7 +4,7 @@ on:
   push:
     branches:
       - main
-      - webconfig-from-satu
+      - dns
   pull_request:
     branches:
       - main
