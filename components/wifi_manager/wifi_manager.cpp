@@ -30,7 +30,6 @@ static void event_handler(
 )
 {
     (void)arg;
-    (void)event_data;
 
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START)
     {
@@ -53,6 +52,34 @@ static void event_handler(
             xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
         }
         ESP_LOGI(TAG, "Wi-Fi GOT_IP - network READY");
+
+        ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
+        if (event && event->esp_netif) {
+            esp_netif_ip_info_t ip_info = {};
+            if (esp_netif_get_ip_info(event->esp_netif, &ip_info) == ESP_OK) {
+                ESP_LOGI(TAG, "NET IP=" IPSTR " MASK=" IPSTR " GW=" IPSTR,
+                         IP2STR(&ip_info.ip), IP2STR(&ip_info.netmask), IP2STR(&ip_info.gw));
+            } else {
+                ESP_LOGE(TAG, "Gagal membaca IP info dari STA netif");
+            }
+
+            const esp_netif_dns_type_t dns_types[] = {
+                ESP_NETIF_DNS_MAIN,
+                ESP_NETIF_DNS_BACKUP,
+                ESP_NETIF_DNS_FALLBACK
+            };
+            const char *dns_names[] = { "MAIN", "BACKUP", "FALLBACK" };
+
+            for (size_t i = 0; i < sizeof(dns_types) / sizeof(dns_types[0]); ++i) {
+                esp_netif_dns_info_t dns = {};
+                esp_err_t dns_err = esp_netif_get_dns_info(event->esp_netif, dns_types[i], &dns);
+                if (dns_err == ESP_OK) {
+                    ESP_LOGI(TAG, "DNS %s=" IPSTR, dns_names[i], IP2STR(&dns.ip.u_addr.ip4));
+                } else {
+                    ESP_LOGW(TAG, "DNS %s tidak tersedia: %s", dns_names[i], esp_err_to_name(dns_err));
+                }
+            }
+        }
         return;
     }
 
