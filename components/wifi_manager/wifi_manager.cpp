@@ -53,6 +53,17 @@ static void event_handler(
             xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
         }
         ESP_LOGI(TAG, "Wi-Fi GOT_IP - network READY");
+
+        // Test terisolasi: pasang DNS fallback global untuk resolver lwIP.
+        // DHCP DNS utama tetap dipertahankan; fallback dipakai bila resolver gagal.
+        esp_netif_dns_info_t fallback_dns = {};
+        fallback_dns.ip.u_addr.ip4.addr = ESP_IP4TOADDR(8, 8, 8, 8);
+        esp_err_t dns_err = esp_netif_set_dns_info(
+            NULL,
+            ESP_NETIF_DNS_FALLBACK,
+            &fallback_dns
+        );
+        ESP_LOGI(TAG, "DNS FALLBACK 8.8.8.8: %s", esp_err_to_name(dns_err));
         return;
     }
 
